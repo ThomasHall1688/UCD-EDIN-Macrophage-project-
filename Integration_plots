@@ -1,0 +1,776 @@
+#######################################################################################
+################################    Integration    ####################################
+#######################################################################################
+#And so it begins
+#Im not really sure where I am going to go with all this. Some ideas, nothing concrete yet.
+#With one exception: IGV tracks. Ive tried to find something better but honestly this will do. 
+#I think the first thing to do is conver everything to bigwigs (BED just doesnt have the coverage)
+#Two options for this. 1: Bedtools. 2:Deeptools. Right now using Bedtools:
+
+######conversion no 1#######
+#First thing is to convert my bams to bedgraph format. Ill start with ChIP bams. The code is:
+bedtools genomecov -ibam AS14_H3K27ac.bam -bg > AS14_H3K27ac.bedgraph
+
+#loop
+for i in *.out.bam.sorted; do \
+bedtools genomecov -ibam $i -bg > ${i%.out.bam.sorted}.bedgraph
+done;  
+
+for i in *_sort_filtered_unique.bam; do \
+bedtools genomecov -ibam $i -bg > ${i%_sort_filtered_unique.bam}.bedgraph
+done;  
+
+
+#You can scale it to reads per million, which might be better. You need to know how many million reads are in your file 
+#This can be done via the almighy samtools:
+samtools view -c AS14_H3K27ac.bam
+#14371468
+bedtools genomecov -ibam AS14_H3K27ac.bam -bg -scale 14 > AS14_H3K27ac_scaled.bedgraph
+
+#After this, you need to get the chromomsome lengths, make a file, and feed it into the bigwig converter:
+https://hgdownload.soe.ucsc.edu/goldenPath/bosTau9/bigZips/bosTau9.chrom.sizes
+
+#file is chrominfo.len. Create variable:
+dm6=/home/workspace/thall/Analysis/UCD_EDIN_macrophage_project/ChIP-seq/Bigwigs/chrominfo.len
+
+#Then away you go with bigwig conversion. First, convert chr names:
+Chromosome 1		NC_037328.1	
+Chromosome 2		NC_037329.1	
+Chromosome 3		NC_037330.1	
+Chromosome 4		NC_037331.1	
+Chromosome 5		NC_037332.1	
+Chromosome 6		NC_037333.1	
+Chromosome 7		NC_037334.1	
+Chromosome 8		NC_037335.1	
+Chromosome 9		NC_037336.1	
+Chromosome 10		NC_037337.1	
+Chromosome 11		NC_037338.1	
+Chromosome 12		NC_037339.1	
+Chromosome 13		NC_037340.1	
+Chromosome 14		NC_037341.1	
+Chromosome 15		NC_037342.1	
+Chromosome 16		NC_037343.1	
+Chromosome 17		NC_037344.1	
+Chromosome 18		NC_037345.1	
+Chromosome 19		NC_037346.1	
+Chromosome 20		NC_037347.1	
+Chromosome 21		NC_037348.1	
+Chromosome 22		NC_037349.1	
+Chromosome 23		NC_037350.1	
+Chromosome 24		NC_037351.1	
+Chromosome 25		NC_037352.1	
+Chromosome 26		NC_037353.1	
+Chromosome 27		NC_037354.1	
+Chromosome 28		NC_037355.1	
+Chromosome 29		NC_037356.1	
+Chromosome X		NC_037357.1
+
+sed -i 's/NC_037328.1/chr1/g; s/NC_037329.1/chr2/g; s/NC_037330.1/chr3/g; s/NC_037331.1/chr4/g; s/NC_037332.1/chr5/g; s/NC_037333.1/chr6/g; s/NC_037334.1/chr7/g; s/NC_037335.1/chr8/g; s/NC_037336.1/chr9/g; s/NC_037337.1/chr10/g; s/NC_037338.1/chr11/g; s/NC_037339.1/chr12/g; s/NC_037340.1/chr13/g; s/NC_037341.1/chr14/g; s/NC_037342.1/chr15/g; s/NC_037343.1/chr16/g; s/NC_037344.1/chr17/g; s/NC_037345.1/chr18/g; s/NC_037346.1/chr19/g; s/NC_037347.1/chr20/g; s/NC_037348.1/chr21/g; s/NC_037349.1/chr22/g; s/NC_037350.1/chr23/g; s/NC_037351.1/chr24/g; s/NC_037352.1/chr25/g; s/NC_037353.1/chr26/g; s/NC_037354.1/chr27/g; s/NC_037355.1/chr28/g; s/NC_037356.1/chr29/g; s/NC_037357.1/chrX/g' AS14_H3K27ac_test.bw
+sed -i 's/chr1/NC_037328.1/g; s/chr2/NC_037329.1/g; s/chr3/NC_037330.1/g; s/chr4/NC_037331.1/g; s/chr5/NC_037332.1/g; s/chr6/NC_037333.1/g; s/chr7/NC_037334.1/g; s/chr8/NC_037335.1/g; s/chr9/NC_037336.1/g; s/chr10/NC_037337.1/g; s/chr11/NC_037338.1/g; s/chr12/NC_037339.1/g; s/chr13/NC_037340.1/g; s/chr14/NC_037341.1/g; s/chr15/NC_037342.1/g; s/chr16/NC_037343.1/g; s/chr17/NC_037344.1/g; s/chr18/NC_037345.1/g; s/chr19/NC_037346.1/g; s/chr20/NC_037347.1/g; s/chr21/NC_037348.1/g; s/chr22/NC_037349.1/g; s/chr23/NC_037350.1/g; s/chr24/NC_037351.1/g; s/chr25/NC_037352.1/g; s/chr26/NC_037353.1/g; s/chr27/NC_037354.1/g; s/chr28/NC_037355.1/g; s/chr29/NC_037356.1/g; s/chrX/NC_037357.1/g' M_bovis_vs_control_HOMER_input.txt
+sed -i 's/1/NC_037328.1/g; s/2/NC_037329.1/g; s/3/NC_037330.1/g; s/4/NC_037331.1/g; s/5/NC_037332.1/g; s/6/NC_037333.1/g; s/7/NC_037334.1/g; s/8/NC_037335.1/g; s/9/NC_037336.1/g; s/10/NC_037337.1/g; s/11/NC_037338.1/g; s/12/NC_037339.1/g; s/13/NC_037340.1/g; s/14/NC_037341.1/g; s/15/NC_037342.1/g; s/16/NC_037343.1/g; s/17/NC_037344.1/g; s/18/NC_037345.1/g; s/19/NC_037346.1/g; s/20/NC_037347.1/g; s/21/NC_037348.1/g; s/22/NC_037349.1/g; s/23/NC_037350.1/g; s/24/NC_037351.1/g; s/25/NC_037352.1/g; s/26/NC_037353.1/g; s/27/NC_037354.1/g; s/28/NC_037355.1/g; s/29/NC_037356.1/g; s/X/NC_037357.1/g' M_bovis_vs_control_HOMER_input.txt
+
+ 
+######conversion no 2#######
+#This required me to download and install Conda, then conda install matplotlib, but it seems to be working(?)
+#This seems much easier than the above, and gives alot more options. Ill try to make this work.
+#First, we need to get the effective genome size of the ARS 1.2 build. We can do this via faCount:
+conda install -c bioconda ucsc-facount
+faCount GCF_002263795.1_ARS-UCD1.2_genomic.fasta
+#2715853792
+
+#then we use deeptools. Lots of options that are usefull:
+#--numberOfProcessors, -p
+# 	Number of processors to use. Type “max/2” to use half the 
+#	maximum number of processors or “max” to use all available processors. (Default: 1)
+#
+#--binSize, -bs	
+#	Size of the bins, in bases, for the output of the bigwig/bedgraph file. (Default: 50)
+#
+#--effectiveGenomeSize 2715853792
+# 	The effective genome size is the portion of the genome that is mappable. Large fractions of the genome are stretches of 
+#	NNNN that should be discarded. Also, if repetitive regions were not included in the mapping of reads, the effective genome 
+#	size needs to be adjusted accordingly. 
+#	A table of values is available here: http://deeptools.readthedocs.io/en/latest/content/feature/effectiveGenomeSize.html .
+#
+#--normalizeUsing
+# 	
+#Possible choices: RPKM, CPM, BPM, RPGC, None
+#
+#--exactScaling	
+#	Instead of computing scaling factors based on a sampling of the reads, process all of the reads to determine 
+#	the exact number that will be used in the output. This requires significantly more time to compute, 
+#	but will produce more accurate scaling factors in cases where alignments that are being filtered are rare 
+#	and lumped together. 
+#	In other words, this is only needed when region-based sampling is expected to produce incorrect results.
+#
+#--centerReads	By adding this option, reads are centered with respect to the fragment length. 
+#	For paired-end data, the read is centered at the fragment length defined by the two ends of the fragment. 
+#	For single-end data, the given fragment length is used. This option is useful to get a sharper signal around enriched regions.
+#
+#--bam, -b	BAM file to process
+#
+#--outFileName, -o
+# 	Output file name.
+
+bamCoverage -p max -bs 1000 --normalizeUsing CPM --effectiveGenomeSize 2715853792 --exactScaling --centerReads -b AS14_H3K27ac.bam -o AS14_H3K27ac.bw
+
+#loop. This is used all oll of the -seq datasets 
+for i in *.sorted;
+do bamCoverage -p max -bs 1000 --normalizeUsing CPM --effectiveGenomeSize 2715853792 --exactScaling --centerReads -b $i -o $i.bw; 
+done
+
+
+#Once again, the issue of the genome and fasta having different chromsome names has come to haunt me. 
+#You can either change the chr names using an alias file (), or maybe we can change the genome file. Either way, because we go from bam to bw, we cant change the tracks. 
+#The easiest way was an alias track. This must be done exactly like this: 'Genome_ID_as_it_is_in_IGV.alias.tab' with the following format:
+chr1	1	NC_037328.1
+chr2	2	NC_037329.1
+chr3	3	NC_037330.1
+chr4	4	NC_037331.1
+
+for i in *.out.bam; 
+do samtools sort $i > $i.sorted;
+done
+
+for i in *.sorted; 
+do samtools index $i > $i.indexed;
+done
+
+
+for bam in $(ls *.bam); do samtools index $bam; done
+
+
+############circilize###############
+#Ok the way this works is you load track by track onto the ideogram.
+#We initialise the ideogram below
+circos.initializeWithIdeogram(species = "bosTau8")
+#We can customize it
+circos.track(ylim = c(0, 1), panel.fun = function(x, y) {
+    chr = CELL_META$sector.index
+    xlim = CELL_META$xlim
+    ylim = CELL_META$ylim
+    circos.rect(xlim[1], 0, xlim[2], 1, col = "red")
+    circos.text(mean(xlim), mean(ylim), chr, cex = 0.7, col = "white",
+        facing = "inside", niceFacing = TRUE)
+}, track.height = 0.05, bg.border = NA)
+
+#Or, we can use our own from the circos file
+Chr_data <- read.delim("Bovine_karyotype.txt")
+circos.genomicInitialize(Chr_data)
+circos.track(ylim = c(0, 1), panel.fun = function(x, y) {
+    chr = CELL_META$sector.index
+    xlim = CELL_META$xlim
+    ylim = CELL_META$ylim
+    circos.rect(xlim[1], 0, xlim[2], 1, col = rand_color(1))
+    circos.text(mean(xlim), mean(ylim), chr, cex = 0.7, col = "white",
+        facing = "inside", niceFacing = TRUE)
+}, track.height = 0.15, bg.border = NA)
+
+
+
+
+
+#This becomes our circle. Then we read in our data for bovis, tuberculosis etc
+setwd("C:/Users/Alast/Dropbox/UCD-EDIN/Integration/Circulize")
+
+#####Mbovis####
+ATAC_mb <- read.delim("ATAC_Mbovis.bed")
+ChIP_H3K4me1_mb <- read.delim("ChIP_H3K4me1_MB.bed")
+ChIP_H3K4me3_mb <- read.delim("ChIP_H3K4me3_MB.bed")
+ChIP_H3K27ac_mb <- read.delim("ChIP_H3K27ac_MB.bed")
+ChIP_H3K27me3_mb <- read.delim("ChIP_H3K27me3_MB.bed")
+colnames(ATAC_mb) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K4me1_mb) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K4me3_mb) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K27ac_mb) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K27me3_mb) <- c("chr","start","end","peak","score")
+
+#Make sure score is numeric and remove the rows with headings
+ChIP_H3K4me1_mb$score <- as.numeric(ChIP_H3K4me1_mb$score)
+ChIP_H3K4me1_mb$start <- as.numeric(ChIP_H3K4me1_mb$start)
+ChIP_H3K4me1_mb$end <- as.numeric(ChIP_H3K4me1_mb$end)
+
+ChIP_H3K4me3_mb$score <- as.numeric(ChIP_H3K4me3_mb$score)
+ChIP_H3K4me3_mb$start <- as.numeric(ChIP_H3K4me3_mb$start)
+ChIP_H3K4me3_mb$end <- as.numeric(ChIP_H3K4me3_mb$end)
+
+ChIP_H3K27me3_mb$score <- as.numeric(ChIP_H3K27me3_mb$score)
+ChIP_H3K27me3_mb$start <- as.numeric(ChIP_H3K27me3_mb$start)
+ChIP_H3K27me3_mb$end <- as.numeric(ChIP_H3K27me3_mb$end)
+
+ChIP_H3K27ac_mb$score <- as.numeric(ChIP_H3K27ac_mb$score)
+ChIP_H3K27ac_mb$start <- as.numeric(ChIP_H3K27ac_mb$start)
+ChIP_H3K27ac_mb$end <- as.numeric(ChIP_H3K27ac_mb$end)
+
+#make sure start and end are min max
+ChIP_H3K4me1_mb <- transform(ChIP_H3K4me1_mb, end = pmax(start, end), start = pmin(start, end))
+ChIP_H3K4me3_mb <- transform(ChIP_H3K4me3_mb, end = pmax(start, end), start = pmin(start, end))
+ChIP_H3K27me3_mb <- transform(ChIP_H3K27me3_mb, end = pmax(start, end), start = pmin(start, end))
+ChIP_H3K27ac_mb <- transform(ChIP_H3K27ac_mb, end = pmax(start, end), start = pmin(start, end))
+
+##Then, we start to draw tracks. This is a line track for atac_mb using the score as the y axis, and start and end columns as the x axis
+#Adding all beds together:
+#Mbovis
+#Chr_data <- read.delim("Bovine_karyotype.txt")
+library(circlize)
+#bed_list = list(ATAC_mb, ChIP_H3K4me1_mb, ChIP_H3K4me3_mb, ChIP_H3K27ac_mb, ChIP_H3K27me3_mb)
+circos.par("track.height" = 0.12, "start.degree" = 90, unit.circle.segments = 1000)
+circos.genomicInitialize(Chr_data)
+circos.genomicTrack(ChIP_H3K4me3_mb, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#ff9999", numeric.column = "score", border = FALSE)
+})
+
+circos.genomicTrack(ChIP_H3K4me1_mb, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#ff8080", numeric.column = "score", border = "#ff8080")
+})
+
+
+circos.genomicTrack(ChIP_H3K27ac_mb, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#ff6666", numeric.column = "score", border = "#ff6666")
+})
+
+
+circos.genomicTrack(ChIP_H3K27me3_mb, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#ff4d4d", numeric.column = "score", border = "#ff4d4d")
+})
+
+circos.genomicTrack(ATAC_mb, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, type = "s", area = TRUE, straight = TRUE, col = "#ff3333", numeric.column = "score", border = "#ff3333")
+})
+circos.clear()
+
+
+#####Mtuberculosis#####
+ATAC_mt <- read.delim("ATAC_Mtuberculosis.bed")
+ChIP_H3K4me1_mt <- read.delim("ChIP_H3K4me1_MT.bed")
+ChIP_H3K4me3_mt <- read.delim("ChIP_H3K4me3_MT.bed")
+ChIP_H3K27ac_mt <- read.delim("ChIP_H3K27ac_MT.bed")
+ChIP_H3K27me3_mt <- read.delim("ChIP_H3K27me3_MT.bed")
+colnames(ATAC_mt) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K4me1_mt) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K4me3_mt) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K27ac_mt) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K27me3_mt) <- c("chr","start","end","peak","score")
+ChIP_H3K4me1_mt <- ChIP_H3K4me1_mt [- grep("Start", ChIP_H3K4me1_mt$start),]
+ChIP_H3K4me3_mt <- ChIP_H3K4me3_mt [- grep("Start", ChIP_H3K4me3_mt$start),]
+ChIP_H3K27ac_mt <- ChIP_H3K27ac_mt [- grep("Start", ChIP_H3K27ac_mt$start),]
+ChIP_H3K27me3_mt<- ChIP_H3K27me3_mt [- grep("Start", ChIP_H3K27me3_mt$start),]
+
+#Make sure score is numeric and remove the rows with headings
+ChIP_H3K4me1_mt$score <- as.numeric(ChIP_H3K4me1_mt$score)
+ChIP_H3K4me1_mt$start <- as.numeric(ChIP_H3K4me1_mt$start)
+ChIP_H3K4me1_mt$end <- as.numeric(ChIP_H3K4me1_mt$end)
+
+ChIP_H3K4me3_mt$score <- as.numeric(ChIP_H3K4me3_mt$score)
+ChIP_H3K4me3_mt$start <- as.numeric(ChIP_H3K4me3_mt$start)
+ChIP_H3K4me3_mt$end <- as.numeric(ChIP_H3K4me3_mt$end)
+
+ChIP_H3K27me3_mt$score <- as.numeric(ChIP_H3K27me3_mt$score)
+ChIP_H3K27me3_mt$start <- as.numeric(ChIP_H3K27me3_mt$start)
+ChIP_H3K27me3_mt$end <- as.numeric(ChIP_H3K27me3_mt$end)
+
+ChIP_H3K27ac_mt$score <- as.numeric(ChIP_H3K27ac_mt$score)
+ChIP_H3K27ac_mt$start <- as.numeric(ChIP_H3K27ac_mt$start)
+ChIP_H3K27ac_mt$end <- as.numeric(ChIP_H3K27ac_mt$end)
+
+#make sure start and end are min max
+ChIP_H3K4me1_mt <- transform(ChIP_H3K4me1_mt, end = pmax(start, end), start = pmin(start, end))
+ChIP_H3K4me3_mt <- transform(ChIP_H3K4me3_mt, end = pmax(start, end), start = pmin(start, end))
+ChIP_H3K27me3_mt <- transform(ChIP_H3K27me3_mt, end = pmax(start, end), start = pmin(start, end))
+ChIP_H3K27ac_mt <- transform(ChIP_H3K27ac_mt, end = pmax(start, end), start = pmin(start, end))
+
+#plot#
+circos.par("track.height" = 0.12, "start.degree" = 90, unit.circle.segments = 1000)
+circos.genomicInitialize(Chr_data)
+circos.genomicTrack(ChIP_H3K4me3_mt, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#99d6ff", numeric.column = "score", border = "#99d6ff")
+})
+
+circos.genomicTrack(ChIP_H3K4me1_mt, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#80ccff", numeric.column = "score", border = "#80ccff")
+})
+
+circos.genomicTrack(ChIP_H3K27ac_mt, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#66c2ff", numeric.column = "score", border = "#66c2ff")
+})
+
+circos.genomicTrack(ChIP_H3K27me3_mt, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#4db8ff", numeric.column = "score", border = "#4db8ff")
+})
+
+circos.genomicTrack(ATAC_mt, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, type = "s", area = TRUE, straight = TRUE, col = "#33adff", numeric.column = "score", border = "#33adff")
+})
+circos.clear()
+
+
+#BCG
+ATAC_BCG <- read.delim("ATAC_BCG.bed")
+ChIP_H3K4me1_BCG <- read.delim("ChIP_H3K4me1_BCG.bed")
+ChIP_H3K4me3_BCG <- read.delim("ChIP_H3K4me3_BCG.bed")
+ChIP_H3K27ac_BCG <- read.delim("ChIP_H3K27ac_BCG.bed")
+ChIP_H3K27me3_BCG <- read.delim("ChIP_H3K27me3_BCG.bed")
+colnames(ATAC_BCG) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K4me1_BCG) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K4me3_BCG) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K27ac_BCG) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K27me3_BCG) <- c("chr","start","end","peak","score")
+ChIP_H3K4me1_BCG <- ChIP_H3K4me1_BCG [- grep("Start", ChIP_H3K4me1_BCG$start),]
+ChIP_H3K4me3_BCG <- ChIP_H3K4me3_BCG [- grep("Start", ChIP_H3K4me3_BCG$start),]
+ChIP_H3K27ac_BCG <- ChIP_H3K27ac_BCG [- grep("Start", ChIP_H3K27ac_BCG$start),]
+ChIP_H3K27me3_BCG<- ChIP_H3K27me3_BCG [- grep("Start", ChIP_H3K27me3_BCG$start),]
+
+ChIP_H3K4me1_BCG <- subset(ChIP_H3K4me1_BCG, score != 1000) 
+ChIP_H3K4me3_BCG <- subset(ChIP_H3K4me3_BCG, score != 1000) 
+ChIP_H3K27me3_BCG <- subset(ChIP_H3K27me3_BCG, score != 1000) 
+ChIP_H3K27ac_BCG <- subset(ChIP_H3K27ac_BCG, score != 1000)
+
+
+#Make sure score is numeric and remove the rows with headings
+ChIP_H3K4me1_BCG$score <- as.numeric(ChIP_H3K4me1_BCG$score)
+ChIP_H3K4me1_BCG$start <- as.numeric(ChIP_H3K4me1_BCG$start)
+ChIP_H3K4me1_BCG$end <- as.numeric(ChIP_H3K4me1_BCG$end)
+
+ChIP_H3K4me3_BCG$score <- as.numeric(ChIP_H3K4me3_BCG$score)
+ChIP_H3K4me3_BCG$start <- as.numeric(ChIP_H3K4me3_BCG$start)
+ChIP_H3K4me3_BCG$end <- as.numeric(ChIP_H3K4me3_BCG$end)
+
+ChIP_H3K27me3_BCG$score <- as.numeric(ChIP_H3K27me3_BCG$score)
+ChIP_H3K27me3_BCG$start <- as.numeric(ChIP_H3K27me3_BCG$start)
+ChIP_H3K27me3_BCG$end <- as.numeric(ChIP_H3K27me3_BCG$end)
+
+ChIP_H3K27ac_BCG$score <- as.numeric(ChIP_H3K27ac_BCG$score)
+ChIP_H3K27ac_BCG$start <- as.numeric(ChIP_H3K27ac_BCG$start)
+ChIP_H3K27ac_BCG$end <- as.numeric(ChIP_H3K27ac_BCG$end)
+
+ChIP_H3K4me1_BCG <- subset(ChIP_H3K4me1_BCG, score < 860) 
+ChIP_H3K4me3_BCG <- subset(ChIP_H3K4me3_BCG, score < 862) 
+#ChIP_H3K27me3_BCG <- subset(ChIP_H3K27me3_BCG, score > 1000) 
+ChIP_H3K27ac_BCG <- subset(ChIP_H3K27ac_BCG, score < 832)
+
+#make sure start and end are min max
+ChIP_H3K4me1_BCG <- transform(ChIP_H3K4me1_BCG, end = pmax(start, end), start = pmin(start, end))
+ChIP_H3K4me3_BCG <- transform(ChIP_H3K4me3_BCG, end = pmax(start, end), start = pmin(start, end))
+ChIP_H3K27me3_BCG <- transform(ChIP_H3K27me3_BCG, end = pmax(start, end), start = pmin(start, end))
+ChIP_H3K27ac_BCG <- transform(ChIP_H3K27ac_BCG, end = pmax(start, end), start = pmin(start, end))
+
+#plot
+circos.par("track.height" = 0.12, "start.degree" = 90, unit.circle.segments = 1000)
+circos.genomicInitialize(Chr_data)
+
+circos.genomicTrack(ChIP_H3K4me3_BCG, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#8533ff", numeric.column = "score", border = "#8533ff")
+})
+
+circos.genomicTrack(ChIP_H3K4me1_BCG, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#751aff", numeric.column = "score", border = "#751aff")
+})
+
+circos.genomicTrack(ChIP_H3K27ac_BCG, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#6600ff", numeric.column = "score", border = "#6600ff")
+})
+
+circos.genomicTrack(ChIP_H3K27me3_BCG, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#5c00e6", numeric.column = "score", border = "#5c00e6")
+})
+
+circos.genomicTrack(ATAC_BCG, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, type = "s", area = TRUE, straight = TRUE, col = "#5200cc", numeric.column = "score", border = "#5200cc")
+})
+circos.clear()
+
+#Irradiated
+ATAC_irradiated <- read.delim("ATAC_irradiated.bed")
+ChIP_H3K4me1_irradiated <- read.delim("ChIP_H3K4me1_Irradiated.bed")
+ChIP_H3K4me3_irradiated <- read.delim("ChIP_H3K4me3_Irradiated.bed")
+ChIP_H3K27ac_irradiated <- read.delim("ChIP_H3K27ac_Irradiated.bed")
+ChIP_H3K27me3_irradiated <- read.delim("ChIP_H3K27me3_Irradiated.bed")
+colnames(ATAC_irradiated) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K4me1_irradiated) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K4me3_irradiated) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K27ac_irradiated) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K27me3_irradiated) <- c("chr","start","end","peak","score")
+ChIP_H3K4me1_irradiated <- ChIP_H3K4me1_irradiated [- grep("Start", ChIP_H3K4me1_irradiated$start),]
+ChIP_H3K4me3_irradiated <- ChIP_H3K4me3_irradiated [- grep("Start", ChIP_H3K4me3_irradiated$start),]
+ChIP_H3K27ac_irradiated <- ChIP_H3K27ac_irradiated [- grep("Start", ChIP_H3K27ac_irradiated$start),]
+ChIP_H3K27me3_irradiated<- ChIP_H3K27me3_irradiated [- grep("Start", ChIP_H3K27me3_irradiated$start),]
+
+#Make sure score is numeric and remove the rows with headings
+ChIP_H3K4me1_irradiated$score <- as.numeric(ChIP_H3K4me1_irradiated$score)
+ChIP_H3K4me1_irradiated$start <- as.numeric(ChIP_H3K4me1_irradiated$start)
+ChIP_H3K4me1_irradiated$end <- as.numeric(ChIP_H3K4me1_irradiated$end)
+
+ChIP_H3K4me3_irradiated$score <- as.numeric(ChIP_H3K4me3_irradiated$score)
+ChIP_H3K4me3_irradiated$start <- as.numeric(ChIP_H3K4me3_irradiated$start)
+ChIP_H3K4me3_irradiated$end <- as.numeric(ChIP_H3K4me3_irradiated$end)
+
+ChIP_H3K27me3_irradiated$score <- as.numeric(ChIP_H3K27me3_irradiated$score)
+ChIP_H3K27me3_irradiated$start <- as.numeric(ChIP_H3K27me3_irradiated$start)
+ChIP_H3K27me3_irradiated$end <- as.numeric(ChIP_H3K27me3_irradiated$end)
+
+ChIP_H3K27ac_irradiated$score <- as.numeric(ChIP_H3K27ac_irradiated$score)
+ChIP_H3K27ac_irradiated$start <- as.numeric(ChIP_H3K27ac_irradiated$start)
+ChIP_H3K27ac_irradiated$end <- as.numeric(ChIP_H3K27ac_irradiated$end)
+
+#make sure start and end are min max
+ChIP_H3K4me1_irradiated <- transform(ChIP_H3K4me1_irradiated, end = pmax(start, end), start = pmin(start, end))
+ChIP_H3K4me3_irradiated <- transform(ChIP_H3K4me3_irradiated, end = pmax(start, end), start = pmin(start, end))
+ChIP_H3K27me3_irradiated <- transform(ChIP_H3K27me3_irradiated, end = pmax(start, end), start = pmin(start, end))
+ChIP_H3K27ac_irradiated <- transform(ChIP_H3K27ac_irradiated, end = pmax(start, end), start = pmin(start, end))
+
+#plot
+circos.par("track.height" = 0.12, "start.degree" = 90, unit.circle.segments = 1000)
+circos.genomicInitialize(Chr_data)
+circos.genomicTrack(ChIP_H3K4me3_irradiated, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#c1f0c1", numeric.column = "score", border = "#c1f0c1")
+})
+
+circos.genomicTrack(ChIP_H3K4me1_irradiated, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#adebad", numeric.column = "score", border = "#adebad")
+})
+
+circos.genomicTrack(ChIP_H3K27ac_irradiated, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#98e698", numeric.column = "score", border = "#98e698")
+})
+
+circos.genomicTrack(ChIP_H3K27me3_irradiated, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#84e184", numeric.column = "score", border = "#84e184")
+})
+
+circos.genomicTrack(ATAC_irradiated, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, type = "s", area = TRUE, straight = TRUE, col = "#6fdc6f", numeric.column = "score", border = "#6fdc6f")
+})
+circos.clear()
+
+#Control
+ATAC_control <- read.delim("ATAC_control.bed")
+ChIP_H3K4me1_control <- read.delim("ChIP_H3K4me1_Control.bed")
+ChIP_H3K4me3_control <- read.delim("ChIP_H3K4me3_Control.bed")
+ChIP_H3K27ac_control <- read.delim("ChIP_H3K27ac_Control.bed")
+ChIP_H3K27me3_control <- read.delim("ChIP_H3K27me3_Control.bed")
+colnames(ATAC_control) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K4me1_control) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K4me3_control) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K27ac_control) <- c("chr","start","end","peak","score")
+colnames(ChIP_H3K27me3_control) <- c("chr","start","end","peak","score")
+ChIP_H3K4me1_control <- ChIP_H3K4me1_control [- grep("Start", ChIP_H3K4me1_control$start),]
+ChIP_H3K4me3_control <- ChIP_H3K4me3_control [- grep("Start", ChIP_H3K4me3_control$start),]
+ChIP_H3K27ac_control <- ChIP_H3K27ac_control [- grep("Start", ChIP_H3K27ac_control$start),]
+ChIP_H3K27me3_control<- ChIP_H3K27me3_control [- grep("Start", ChIP_H3K27me3_control$start),]
+
+#Make sure score is numeric and remove the rows with headings
+ChIP_H3K4me1_control$score <- as.numeric(ChIP_H3K4me1_control$score)
+ChIP_H3K4me1_control$start <- as.numeric(ChIP_H3K4me1_control$start)
+ChIP_H3K4me1_control$end <- as.numeric(ChIP_H3K4me1_control$end)
+
+ChIP_H3K4me3_control$score <- as.numeric(ChIP_H3K4me3_control$score)
+ChIP_H3K4me3_control$start <- as.numeric(ChIP_H3K4me3_control$start)
+ChIP_H3K4me3_control$end <- as.numeric(ChIP_H3K4me3_control$end)
+
+ChIP_H3K27me3_control$score <- as.numeric(ChIP_H3K27me3_control$score)
+ChIP_H3K27me3_control$start <- as.numeric(ChIP_H3K27me3_control$start)
+ChIP_H3K27me3_control$end <- as.numeric(ChIP_H3K27me3_control$end)
+
+ChIP_H3K27ac_control$score <- as.numeric(ChIP_H3K27ac_control$score)
+ChIP_H3K27ac_control$start <- as.numeric(ChIP_H3K27ac_control$start)
+ChIP_H3K27ac_control$end <- as.numeric(ChIP_H3K27ac_control$end)
+
+#make sure start and end are min max
+ChIP_H3K4me1_control <- transform(ChIP_H3K4me1_control, end = pmax(start, end), start = pmin(start, end))
+ChIP_H3K4me3_control <- transform(ChIP_H3K4me3_control, end = pmax(start, end), start = pmin(start, end))
+ChIP_H3K27me3_control <- transform(ChIP_H3K27me3_control, end = pmax(start, end), start = pmin(start, end))
+ChIP_H3K27ac_control <- transform(ChIP_H3K27ac_control, end = pmax(start, end), start = pmin(start, end))
+
+#Control
+circos.par("track.height" = 0.12, "start.degree" = 90, unit.circle.segments = 1000)
+circos.genomicInitialize(Chr_data)
+
+circos.genomicTrack(ChIP_H3K4me3_control, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#a6a6a6", numeric.column = "score", border = "#a6a6a6")
+})
+
+circos.genomicTrack(ChIP_H3K4me1_control, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#999999", numeric.column = "score", border = "#999999")
+})
+
+circos.genomicTrack(ChIP_H3K27ac_control, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#8c8c8c", numeric.column = "score", border = "#8c8c8c")
+})
+
+circos.genomicTrack(ChIP_H3K27me3_control, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, ylim = c(0,1000), type = "s", area = TRUE, straight = TRUE, col = "#808080", numeric.column = "score", border = "#808080")
+})
+
+circos.genomicTrack(ATAC_control, 
+    panel.fun = function(region, value, ...) {
+        circos.genomicLines(region, value, type = "s", area = TRUE, straight = TRUE, col = "#737373", numeric.column = "score", border = "#737373")
+})
+circos.clear()
+
+
+#############2d scatterplot#####################
+#scatter2D (x, y, ..., colvar = NULL,
+#         col = NULL, NAcol = "white", breaks = NULL,
+#         colkey = NULL, clim = NULL, clab = NULL, 
+#         CI = NULL, add = FALSE, plot = TRUE)
+
+#type: plot types. Allowed values are:
+#"b" to draw both points and line
+#"h" for vertical line
+#"l" for line only
+#"p" for points only
+library(plot3Drgl)
+library(plot3D)
+library(ggplot2)
+data <- read.csv("Scatter.csv")
+data_genes_as_rownames <- data.frame(data[,-1], row.names = data[,1])
+LogFC <- data_genes_as_rownames$MB.vs.Control.Log.2.Fold.Change.for.RNA.seq
+
+#You can add the genes as labels, to any plot (add = TRUE) but it gets messy for M. bovis
+text2D(LogFC, Histone, pch = 16, bty ="n",
+       ylab = "H3K4me3 Log 2 fold change", xlab = "RNA Log 2 fold change",
+       main = "H3K4me3 VS RNA log 2 fold change",
+       adj = 0.5, font = 2,
+       labels = rownames(data_genes_as_rownames), cex = 0.6,
+       add = TRUE)  
+
+#Scatter plots per group per mark vs RNA-seq 
+#MB
+Histone <- data_genes_as_rownames$MB.vs.Control.Log.2.Fold.Change.for.H3K4me3
+
+scatter2D(LogFC, Histone, pch = 16, bty ="n", colvar = LogFC,
+          col = c("#ffe6e6","#ff8080","#ff1a1a", "#b30000"), 
+          breaks = c(-2,0,2,4,6), type ="p", colkey = FALSE,
+          ylab = "H3K4me3 Log 2 fold change", xlab = "RNA Log 2 fold change",
+          main = "M. bovis H3K4me3 VS RNA log 2 fold change")                 
+Histone <- data_genes_as_rownames$MB.vs.Control.Log.2.Fold.Change.for.H3K4me1
+                   
+scatter2D(LogFC, Histone, pch = 16, bty ="n", colvar = LogFC,
+          col = c("#ffe6e6","#ff8080","#ff1a1a", "#b30000"), 
+          breaks = c(-2,0,2,4,6), type ="p", colkey = FALSE,
+          ylab = "H3K4me1 Log 2 fold change", xlab = "RNA Log 2 fold change",
+          main = "M. bovis H3K4me1 VS RNA log 2 fold change") 
+
+Histone <- data_genes_as_rownames$MB.vs.Control.Log.2.Fold.Change.for.H3K27ac
+
+scatter2D(LogFC, Histone, pch = 16, bty ="n", colvar = LogFC,
+          col = c("#ffe6e6","#ff8080","#ff1a1a", "#b30000"), 
+          breaks = c(-2,0,2,4,6), type ="p", colkey = FALSE,
+          ylab = "H3K27ac Log 2 fold change", xlab = "RNA Log 2 fold change",
+          main = "M. bovis H3K27ac VS RNA log 2 fold change")                     
+
+Histone <- data_genes_as_rownames$MB.vs.Control.Log.2.Fold.Change.for.ATAC.seq
+
+scatter2D(LogFC, Histone, pch = 16, bty ="n", colvar = LogFC,
+          col = c("#ffe6e6","#ff8080","#ff1a1a", "#b30000"), 
+          breaks = c(-2,0,2,4,6), type ="p", colkey = FALSE,
+          ylab = "ATAC Log 2 fold change", xlab = "RNA Log 2 fold change",
+          main = "M. bovis ATAC VS RNA log 2 fold change")                   
+#MT
+Histone <- data_genes_as_rownames$MT.vs.Control.Log.2.Fold.Change.for.H3K4me1
+                   
+scatter2D(LogFC, Histone, pch = 16, bty ="n", colvar = LogFC,
+          col = c("#ccebff","#80ccff","#007acc","#004d80"), 
+          breaks = c(-2,0,2,4,6), type ="p", colkey = FALSE,
+          ylab = "H3K4me1 Log 2 fold change", xlab = "RNA Log 2 fold change",
+          main = "M. tuberculosis H3K4me1 VS RNA log 2 fold change") 
+
+Histone <- data_genes_as_rownames$MT.vs.Control.Log.2.Fold.Change.for.H3K27ac
+
+scatter2D(LogFC, Histone, pch = 16, bty ="n", colvar = LogFC,
+          col = c("#ccebff","#80ccff","#007acc","#004d80"), 
+          breaks = c(-2,0,2,4,6), type ="p", colkey = FALSE,
+          ylab = "H3K27ac Log 2 fold change", xlab = "RNA Log 2 fold change",
+          main = "M. tuberculosis H3K27ac VS RNA log 2 fold change")                     
+
+Histone <- data_genes_as_rownames$MT.vs.Control.Log.2.Fold.Change.for.ATAC.seq
+
+scatter2D(LogFC, Histone, pch = 16, bty ="n", colvar = LogFC,
+          col = c("#ccebff","#80ccff","#007acc","#004d80"), 
+          breaks = c(-2,0,2,4,6), type ="p", colkey = FALSE,
+          ylab = "ATAC Log 2 fold change", xlab = "RNA Log 2 fold change",
+          main = "M. tuberculosis ATAC VS RNA log 2 fold change")   
+
+#IR
+Histone <- data_genes_as_rownames$IR.vs.Control.Log.2.Fold.Change.for.H3K4me3
+
+scatter2D(LogFC, Histone, pch = 16, bty ="n", colvar = LogFC,
+          col = c("#d6f5d6","#84e184","#32cd32", "#1e7b1e"), 
+          breaks = c(-2,0,2,4,6), type ="p", colkey = FALSE,
+          ylab = "H3K4me3 Log 2 fold change", xlab = "RNA Log 2 fold change",
+          main = "IR M. bovis H3K4me3 VS RNA log 2 fold change")                 
+Histone <- data_genes_as_rownames$IR.vs.Control.Log.2.Fold.Change.for.H3K4me1
+                   
+scatter2D(LogFC, Histone, pch = 16, bty ="n", colvar = LogFC,
+          col = c("#d6f5d6","#84e184","#32cd32", "#1e7b1e"), 
+          breaks = c(-2,0,2,4,6), type ="p", colkey = FALSE,
+          ylab = "H3K4me1 Log 2 fold change", xlab = "RNA Log 2 fold change",
+          main = "IR M. bovis H3K4me1 VS RNA log 2 fold change") 
+
+Histone <- data_genes_as_rownames$IR.vs.Control.Log.2.Fold.Change.for.H3K27ac
+
+scatter2D(LogFC, Histone, pch = 16, bty ="n", colvar = LogFC,
+          col = c("#d6f5d6","#84e184","#32cd32", "#1e7b1e"), 
+          breaks = c(-2,0,2,4,6), type ="p", colkey = FALSE,
+          ylab = "H3K27ac Log 2 fold change", xlab = "RNA Log 2 fold change",
+          main = "IR M. bovis H3K27ac VS RNA log 2 fold change")  
+
+#BCG
+Histone <- data_genes_as_rownames$BCG.vs.Control.Log.2.Fold.Change.for.H3K4me1
+                   
+scatter2D(LogFC, Histone, pch = 16, bty ="n", colvar = LogFC,
+          col = c("#bb99ff","#7733ff","#4400cc", "#2a0080"), 
+          breaks = c(-2,0,2,4,6), type ="p", colkey = FALSE,
+          ylab = "H3K4me1 Log 2 fold change", xlab = "RNA Log 2 fold change",
+          main = "BCG H3K4me1 VS RNA log 2 fold change") 
+
+Histone <- data_genes_as_rownames$BCG.vs.Control.Log.2.Fold.Change.for.H3K27ac
+
+scatter2D(LogFC, Histone, pch = 16, bty ="n", colvar = LogFC,
+          col = c("#bb99ff","#7733ff","#4400cc", "#2a0080"), 
+          breaks = c(-2,0,2,4,6), type ="p", colkey = FALSE,
+          ylab = "H3K27ac Log 2 fold change", xlab = "RNA Log 2 fold change",
+          main = "BCG H3K27ac VS RNA log 2 fold change")    
+
+
+#Calculating corr values 
+cor.test(Scatter$`MB vs Control Log 2 Fold Change for H3K4me3`, Scatter$`MB vs Control Log 2 Fold Change for RNA-seq`, method = c("pearson", "kendall", "spearman"))
+cor.test(Scatter$`MB vs Control Log 2 Fold Change for H3K4me1`, Scatter$`MB vs Control Log 2 Fold Change for RNA-seq`, method = c("pearson", "kendall", "spearman"))
+cor.test(Scatter$`MB vs Control Log 2 Fold Change for H3K27ac`, Scatter$`MB vs Control Log 2 Fold Change for RNA-seq`, method = c("pearson", "kendall", "spearman"))
+cor.test(Scatter$`MB vs Control Log 2 Fold Change for ATAC-seq`, Scatter$`MB vs Control Log 2 Fold Change for RNA-seq`, method = c("pearson", "kendall", "spearman"))
+cor.test(Scatter$`MT vs Control Log 2 Fold Change for H3K4me1`, Scatter$`MT vs Control Log 2 Fold Change for RNA-seq`, method = c("pearson", "kendall", "spearman"))
+cor.test(Scatter$`MT vs Control Log 2 Fold Change for H3K27ac`, Scatter$`MT vs Control Log 2 Fold Change for RNA-seq`, method = c("pearson", "kendall", "spearman"))
+cor.test(Scatter$`IR vs Control Log 2 Fold Change for H3K4me3`, Scatter$`IR vs Control Log 2 Fold Change for RNA-seq`, method = c("pearson", "kendall", "spearman"))
+cor.test(Scatter$`IR vs Control Log 2 Fold Change for H3K4me1`, Scatter$`IR vs Control Log 2 Fold Change for RNA-seq`, method = c("pearson", "kendall", "spearman"))
+cor.test(Scatter$`IR vs Control Log 2 Fold Change for H3K27ac`, Scatter$`IR vs Control Log 2 Fold Change for RNA-seq`, method = c("pearson", "kendall", "spearman"))
+cor.test(Scatter$`BCG vs Control Log 2 Fold Change for H3K4me1`, Scatter$`BCG vs Control Log 2 Fold Change for RNA-seq`, method = c("pearson", "kendall", "spearman"))
+cor.test(Scatter$`BCG vs Control Log 2 Fold Change for H3K27ac`, Scatter$`BCG vs Control Log 2 Fold Change for RNA-seq`, method = c("pearson", "kendall", "spearman"))
+
+########### Vennbar plot ###############
+#Venn-bar diagram for the amounts of genes with epigenetic differences for each experimental group
+library(ggplot2)
+library(dplyr)
+library(cowplot)
+
+knitr::opts_chunk$set(fig.path = './', message = F)
+
+venn <- read.csv('venn.csv')
+
+mycolors <- venn$color
+names(mycolors) <- venn$comparison
+
+p2 <- ggplot(data=venn, aes(x=reorder(comparison, desc(count)), y = count,  fill = comparison)) + 
+    geom_bar(stat='identity') +
+    labs(y = 'Total epigentically modified genes', x = NULL) +
+    scale_fill_manual(values = mycolors) +
+    theme_light() +
+    theme(legend.title = element_blank(),
+          legend.position = 'none') +
+    geom_text(aes(x=reorder(comparison, desc(count)),  label = count, hjust = 0.5)) +
+    coord_flip()
+p2
+
+
+
+#################### cm plot #######################
+#Needs to be edited for my code 
+#Will add emmys here for convienence
+#UCD EDIN
+#Original qvalue plots 
+
+#Read in and format so that the GWAS has the new Qvalues
+library(readr)
+Bovine_GWAS <- read.csv(file = "/home/workspace/thall/Analysis/Human_Bovine_comparison_paper/GWAS_integration/GWAS_remapping_data/HOFR_ARS.csv")
+colnames(Bovine_GWAS)[3] <- "SNP"
+bAM_MB_newQ <- read_csv("SNP_CM.csv")
+test_bAM_MB <- merge(Bovine_GWAS, bAM_MB_newQ, by = "SNP", all.x = TRUE)
+test_bAM_MB <- test_bAM_MB[order(test_bAM_MB$qval),] 
+test_bAM_MB[c(1:64), 5] <- test_bAM_MB[c(1:64), 8]
+test_bAM_MB <- test_bAM_MB[, c(1,2,3,5)]
+Bovine_GWAS <- Bovine_GWAS[, c(3,1,2,5)]
+
+write.csv(test_bAM_MB, file = "New_bAM_MB_CM.csv", row.names = FALSE)
+write.csv(Bovine_GWAS, file = "Bovine_orginal_CM.csv", row.names = FALSE)
+
+Bovine_orginal_CM <- Bovine_GWAS
+Bovine_orginal_CM <- na.omit(Bovine_orginal_CM) 
+New_bAM_MB_CM <- test_bAM_MB
+New_bAM_MB_CM <- na.omit(New_bAM_MB_CM) 
+ 
+
+
+CMplot(Bovine_orginal_CM,type="p",plot.type="c",chr.labels=paste(c(1:29),sep=""),r=0.4,cir.legend=TRUE,
+        outward=FALSE,cir.legend.col="black",cir.chr.h=1.3,file="jpg", threshold = c(0.05, 0.1),
+		amplify=TRUE,threshold.lty=c(1,2),threshold.col=c("red","blue"),signal.line=1,signal.col=c("red","blue"),
+        dpi=300,file.output=TRUE,verbose=TRUE,width=10,height=10)
+		
+SNPs_bAM_MB <- bAM_MB_newQ$SNP   
+CMplot(New_bAM_MB_CM,type="p",plot.type="c",chr.labels=paste(c(1:29),sep=""),r=0.4,cir.legend=TRUE,
+        outward=FALSE,cir.legend.col="black",cir.chr.h=1.3,file="jpg", threshold = c(0.05, 0.1),
+		amplify=TRUE,threshold.lty=c(1,2),threshold.col=c("red","blue"),signal.line=1,signal.col=c("red","blue"),
+        dpi=300,file.output=TRUE,verbose=TRUE,width=10,height=10, highlight=SNPs_bAM_MB, highlight.col="green")
+		
+
+CMplot(Human_orginal_CM,type="p",plot.type="c",chr.labels=paste(c(1:22,"X"),sep=""),r=0.4,cir.legend=TRUE,
+        outward=FALSE,cir.legend.col="black",cir.chr.h=1.3,file="jpg", threshold = c(0.05, 0.1),
+		amplify=TRUE,threshold.lty=c(1,2),threshold.col=c("red","blue"),signal.line=1,signal.col=c("red","blue"),
+        memo="Human_orginal_CM",dpi=300,file.output=TRUE,verbose=TRUE,width=10,height=10)	
+
+SNPs_hAM <- hAM_newQ$SNP		
+CMplot(New_hAM_TB_CM,type="p",plot.type="c",chr.labels=paste(c(1:22,"X"),sep=""),r=0.4,cir.legend=TRUE,
+        outward=FALSE,cir.legend.col="black",cir.chr.h=1.3,file="jpg", threshold = c(0.05, 0.1),
+		amplify=TRUE,threshold.lty=c(1,2),threshold.col=c("red","blue"),signal.line=1,signal.col=c("red","blue"),
+        memo="hAM_TB_CM_HL",dpi=300,file.output=TRUE,verbose=TRUE,width=10,height=10, highlight=SNPs_hAM , highlight.col="green")	
+
+
+
+Human_GWAS <- read.csv(file = "GWAS_CM.csv")
+hMDM_newQ <- read_csv("SNP_CM.csv")
+test_hMDM <- merge(Human_GWAS, hMDM_newQ, by = "SNP", all.x = TRUE)
+test_hMDM <- test_hMDM[order(test_hMDM$),] 
+test_hMDM[c(1:2), 4] <- test_hMDM[c(1:2), 5]
+test_hMDM <- test_hMDM[, c(1,2,3,4)]
+#Human_GWAS <- Human_GWAS[, c(3,1,2,5)]
+
+write.csv(Human_GWAS, file = "Human_orginal_CM.csv", row.names = FALSE)
+write.csv(test_hMDM, file = "New_hMDM_TB_CM.csv", row.names = FALSE)
+
+Human_orginal_CM <-Human_GWAS
+Human_orginal_CM <- na.omit(Human_orginal_CM)
+New_hMDM_TB_CM <-test_hMDM
+New_hMDM_TB_CM <- na.omit(New_hMDM_TB_CM)
+
+CMplot(Human_orginal_CM,type="p",plot.type="c",chr.labels=paste(c(1:31),sep=""),r=0.4,cir.legend=TRUE,
+        outward=FALSE,cir.legend.col="black",cir.chr.h=1.3,file="jpg",
+		amplify=TRUE,threshold.lty=c(1,2),threshold.col=c("red","blue"),signal.line=1,signal.col=c("red","blue"),
+        dpi=300,file.output=TRUE,verbose=TRUE,width=10,height=10)	
+
+SNPs_hAM <- hMDM_newQ$SNP		
+CMplot(New_hMDM_TB_CM,type="p",plot.type="c",chr.labels=paste(c(1:31),sep=""),r=0.4,cir.legend=TRUE,
+        outward=FALSE,cir.legend.col="black",cir.chr.h=1.3,file="jpg", threshold = c(0.05, 0.1),
+		amplify=TRUE,threshold.lty=c(1,2),threshold.col=c("red","blue"),signal.line=1,signal.col=c("red","blue"),
+        dpi=300,file.output=TRUE,verbose=TRUE,width=10,height=10, highlight=SNPs_hAM , highlight.col="green")	
