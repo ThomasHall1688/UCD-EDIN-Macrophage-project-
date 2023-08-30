@@ -1,0 +1,237 @@
+#######################################################################################
+#############################   ATAC-seq pipeline  ####################################
+#######################################################################################
+#Diagenode brought everything to Peaks using the same pipeline and paremeters I would use
+#I have repeated the pipeline and will now use ATACworks to see if there is a marked improvement 
+#Might be a waste of time but I think its worth having a go. This marks the first major new step. 
+
+#I realise now I need CUDA 9. so I literally cannot run this on my laptop. Whoops. I might just go home when I 
+#have the pipeline done. For now ill prep as much as I can. 
+#OK nevermind. Unless I can find a bovine macrophage atac seq dataset with higher coverage, this wont work.
+#As such, I now move onto the advanced analysis, hence visualisation and advanced analysis, followed by intefration
+
+########################   ATAC-seq advanced analysis  ################################
+
+####### Differential analysis: Diffbind #######
+#For the differential analysis, Ive decided on Diffbind (ROTS seemed very janky), which apparentoly can be used for 
+#ChIP and ATAC. Lets see how it goes. 
+
+###############Reading in peaksets###############
+#diffBind requires a metadata file to load in the peaksets. This worked for me, however it took multiple tries. 
+#This was in .csv format. Alignment files were in .bam and peaksets in tab deliminated with the headers removed.
+
+SampleID	Tissue	Factor 	Condition	Treatment 	Replicate 	bamReads	ControlID	bamControl	Peaks	PeakCaller
+
+# load library 
+library(DiffBind)
+setwd('/home/workspace/thall/Analysis/UCD_EDIN_macrophage_project/ATAC-seq/Peak')
+
+#read in metadataset
+Sample_sheet <- read.csv('Sample_sheet.csv')
+names(samples)
+
+#In the case of this analysis, Ive decided to drop A29 (see journal notes for reason why)
+Sample_sheet <- Sample_sheet[-1,]
+
+#read metadataset as a dba object. Make sure your peak and bam files are pointed at by your sample sheet
+ATAC_diffbind_object <- dba(sampleSheet=Sample_sheet, peakFormat = 'narrow')
+
+#show object. This shows how many peaks are in each peakset, as well as (in the first line) the total number of unique peaks after merging overlapping ones (3795), and the dimensions of
+#dba.plotPCA(default binding matrix of 11 samples by the 2845 sites that overlap in at least two of the samples.
+
+ATAC_diffbind_object
+
+###############Counting reads###############
+#The next step is to calculate a binding matrix with scores based on read counts for every sample (affinity scores), rather than confidence scores for only those peaks called in a specific
+#sample (occupancy scores).  it is advisable to use the 'summits' option to re-center each peak around the point of greatest enrichment. This keeps the peaks at a consistent width (in this case,
+#with summits=250, the peaks will be 500bp, extending 250bp up- and down- stream of the summit)
+#Note DBA_FRIP DBApeaksetmetadata: Fraction of Reads in Peaks (number of reads in intervals divided by total number of reads in library)
+#bUseSummarizeOverlaps = logical indicating that summarizeOverlaps should be used for counting instead of the built-in counting code. This option is slower but uses the more standard counting function. 
+#If TRUE, all read files must be BAM (.bam extension), with associated index files (.bam.bai extension). The fragmentSize parameter must absent.
+ATAC_diffbind_count <- dba.count(ATAC_diffbind_object, bUseSummarizeOverlaps=TRUE)
+ATAC_diffbind_count
+
+#Then we need to normalise the data using the DESeq2 method
+ATAC_diffbind_count <- dba.normalize(ATAC_diffbind_count, normalize=DBA_NORM_LIB)
+
+#Before running the differential analysis, we need to tell DiffBind which cell lines fall in which groups. This is done using the dba.contrast function, as follows:
+#By default diffBind will not accept less than 3 coniditions, so for infected/control we need to set minMembers = 2
+ATAC_diffbind_contrast <- dba.contrast(ATAC_diffbind_count, categories=DBA_TREATMENT, minMembers = 2)
+
+#This will run an DESeq2 analysis (see subsequent section discussing the technical details of the analysis) using the default binding matrix.
+ATAC_diffbind_contrast <- dba.analyze(ATAC_diffbind_contrast)
+
+#To see a summary of results for each tool we can use 
+dba.show(ATAC_diffbind_contrast, bContrasts=T)
+
+
+#######################Retrieving the differentially bound sites###############
+#The final step is to retrieve the differentially bound sites
+ATAC_diffbind_contrast.DB <- dba.report(ATAC_diffbind_contrast)
+ATAC_diffbind_contrast.DB 
+
+#Unfinished code
+#To extract the full results from DESeq2 we use dba.report:
+res_M_bovis_vs_control <- dba.report(ATAC_diffbind_contrast, method=DBA_DESEQ2, contrast = 3, th=0.05)
+res_M_tuberculosis_vs_control <- dba.report(ATAC_diffbind_contrast, method=DBA_DESEQ2, contrast = 4, th=0.05)
+res_M_bovis_vs_Irradiated <- dba.report(ATAC_diffbind_contrast, method=DBA_DESEQ2, contrast = 6, th=0.05)
+res_M_tuberculosis_vs_Irradiated <- dba.report(ATAC_diffbind_contrast, method=DBA_DESEQ2, contrast = 7, th=0.05)
+res_M_bovis_vs_BCG <- dba.report(ATAC_diffbind_contrast, method=DBA_DESEQ2, contrast = 8, th=0.05)
+res_M_bovis_vs_M_tuberculosis <- dba.report(ATAC_diffbind_contrast, method=DBA_DESEQ2, contrast = 10, th=0.05)
+
+#values in the report:
+#Conc: mean read concentration over all the samples (the default calculation uses log2 normalized ChIP read counts with control read counts subtracted)
+#Conc_Nanog: mean concentration over the first group
+#Conc_Pou5f1: mean concentration over the second group
+#Fold: shows the difference in mean concentrations between the two groups, with a positive value indicating increased binding affinity in the 1st group 
+#and a negative value indicating increased binding affinity in the second group (i have flipped them around for ease of viewing)
+
+# Write to file
+res_M_bovis_vs_control_DF <- as.data.frame(res_M_bovis_vs_control)
+res_M_tuberculosis_vs_control_DF <- as.data.frame(res_M_tuberculosis_vs_control)
+res_M_bovis_vs_Irradiated_DF <- as.data.frame(res_M_bovis_vs_Irradiated)
+res_M_tuberculosis_vs_Irradiated_DF <- as.data.frame(res_M_tuberculosis_vs_Irradiated)
+res_M_bovis_vs_BCG_DF <- as.data.frame(res_M_bovis_vs_BCG)
+res_M_bovis_vs_M_tuberculosis_DF <- as.data.frame(res_M_bovis_vs_M_tuberculosis)
+
+write.csv(res_M_bovis_vs_control_DF, file='M_bovis_vs_control_DB_ATAC.csv', quote=F, row.names=F)
+write.csv(res_M_tuberculosis_vs_control_DF, file='M_tuberculosis_vs_control_DB_ATAC.csv',quote=F, row.names=F)
+write.csv(res_M_bovis_vs_Irradiated_DF, file='M_bovis_vs_Irradiated_DB_ATAC.csv',quote=F, row.names=F)
+write.csv(res_M_tuberculosis_vs_Irradiated_DF, file='M_tuberculosis_vs_Irradiated_DB_ATAC.csv',quote=F, row.names=F)
+write.csv(res_M_bovis_vs_BCG_DF, file='M_bovis_vs_BCG_DB_ATAC.csv',quote=F, row.names=F)
+write.csv(res_M_bovis_vs_M_tuberculosis_DF, file='M_bovis_vs_M_tuberculosis_DB_ATAC.csv',quote=F, row.names=F)
+
+
+
+# Create bed files for each keeping only significant peaks (p < 0.05) for downstream visualisation
+
+res_M_bovis_vs_control_enrich <- res_M_bovis_vs_control_DF %>% 
+  filter(FDR < 0.05 & Fold < 0) %>% 
+  select(seqnames, start, end)
+  
+res_M_tuberculosis_vs_control_enrich <- res_M_tuberculosis_vs_control_DF %>% 
+  filter(FDR < 0.05 & Fold < 0) %>% 
+  select(seqnames, start, end)
+
+res_M_bovis_vs_Irradiated_enrich <- res_M_bovis_vs_Irradiated_DF %>% 
+  filter(FDR < 0.05 & Fold < 0) %>% 
+  select(seqnames, start, end)
+
+res_M_tuberculosis_vs_Irradiated_enrich <- res_M_tuberculosis_vs_Irradiated_DF %>% 
+  filter(FDR < 0.05 & Fold < 0) %>% 
+  select(seqnames, start, end)
+
+res_M_bovis_vs_BCG_enrich <- res_M_bovis_vs_BCG_DF %>% 
+  filter(FDR < 0.05 & Fold < 0) %>% 
+  select(seqnames, start, end)
+
+res_M_bovis_vs_M_tuberculosis_enrich <- res_M_bovis_vs_M_tuberculosis_DF %>% 
+  filter(FDR < 0.05 & Fold < 0) %>% 
+  select(seqnames, start, end)  
+ 
+  
+# Write to file
+write.table(res_M_bovis_vs_control_enrich, file='M_bovis_vs_control.bed', sep='\t', quote=F, row.names=F, col.names=F)
+write.table(res_M_tuberculosis_vs_control_enrich, file='M_tuberculosis_vs_control.bed', sep='\t', quote=F, row.names=F, col.names=F)
+write.table(res_M_bovis_vs_Irradiated_enrich, file='M_bovis_vs_Irradiated.bed', sep='\t', quote=F, row.names=F, col.names=F)
+write.table(res_M_tuberculosis_vs_Irradiated_enrich, file='M_tuberculosis_vs_Irradiated.bed', sep='\t', quote=F, row.names=F, col.names=F)
+write.table(res_M_bovis_vs_BCG_enrich, file='M_bovis_vs_BCG.bed', sep='\t', quote=F, row.names=F, col.names=F)
+write.table(res_M_bovis_vs_M_tuberculosis_enrich, file='M_bovis_vs_M_tuberculosis.bed', sep='\t', quote=F, row.names=F, col.names=F)
+
+
+
+####################Plotting and reporting#####################
+#plot a pca
+#To see how well the samples cluster with one another, we can draw a PCA plot using all 85 consensus sites. 
+#You should see both Nanog and Pou5f1 replicates clustering together.
+dba.plotPCA(ATAC_diffbind_count,  attributes=DBA_FACTOR, label=DBA_ID)
+dba.plotPCA(ATAC_diffbind_contrast,  attributes=DBA_FACTOR, label=DBA_ID)
+dba.plotPCA(ATAC_diffbind_contrast, DBA_TREATMENT, minMembers = 2, contrast = 3)
+dba.plotPCA(ATAC_diffbind_contrast, DBA_TREATMENT, minMembers = 2, contrast = 6)
+dba.plotPCA(ATAC_diffbind_contrast, DBA_TREATMENT, minMembers = 2, contrast = 8)
+dba.plotPCA(ATAC_diffbind_contrast, DBA_TREATMENT, minMembers = 2, contrast = 10)
+
+#A correlation heatmap can be plotted, based on the result of the analysis
+plot(ATAC_diffbind_contrast, main = 'M.bovis vs Control', contrast=3) 
+plot(ATAC_diffbind_contrast, main = 'M.bovis vs Gamma Irradiated M. bovis', contrast=6)
+plot(ATAC_diffbind_contrast, main = 'M.bovis vs BCG', contrast=8)
+plot(ATAC_diffbind_contrast, main = 'M.bovis vs M. tuberculosis', contrast=10) 
+#plot(ATAC_diffbind_contrast, main = 'Control vs Gamma Irradiated M. bovis', contrast=1) 
+#plot(ATAC_diffbind_contrast, main = 'Control vs BCG', contrast=2, th=.5) 
+#plot(ATAC_diffbind_contrast, main = 'Control vs M. tuberculosis', contrast=4, th=.5) 
+#plot(ATAC_diffbind_contrast, main = 'Gamma Irradiated M. bovis vs BCG', contrast=5, th=.5) 
+#plot(ATAC_diffbind_contrast, main = 'Gamma Irradiated M. bovis vs M. tuberculosis', contrast=7, th=.5) 
+#plot(ATAC_diffbind_contrast, main = 'M.bovis vs BCG', contrast=9, th=.5) 
+
+#plot ATAC_diffbind_object as a correlation heatmap. Gives an initial clustering of the samples using the cross-correlations of each row of the binding matrix
+plot(ATAC_diffbind_object)
+plot(ATAC_diffbind_count)
+plot(ATAC_diffbind_contrast)
+
+#plot an MA
+
+dba.plotMA(ATAC_diffbind_contrast, contrast=3, bFlip = TRUE) 
+dba.plotMA(ATAC_diffbind_contrast, contrast=6, bFlip = TRUE)
+dba.plotMA(ATAC_diffbind_contrast, contrast=8, bFlip = TRUE)
+dba.plotMA(ATAC_diffbind_contrast, contrast=10, bFlip = TRUE) 
+
+#Similar to MA plots, Volcano plots also highlight significantly differentially bound sites and
+#show their fold changes. Here, however, the confidence statistic (FDR or p-value) is shown on a negative log scale.
+dba.plotVolcano(ATAC_diffbind_contrast)
+dba.plotVolcano(ATAC_diffbind_contrast, contrast=3, bFlip = TRUE) 
+dba.plotVolcano(ATAC_diffbind_contrast, contrast=6, bFlip = TRUE)
+dba.plotVolcano(ATAC_diffbind_contrast, contrast=8, bFlip = TRUE)
+dba.plotVolcano(ATAC_diffbind_contrast, contrast=10, bFlip = TRUE) 
+
+
+#how are reads distributed amongst the different classes of differentially bound sites and
+#sample groups? These data can be more clearly seen using a boxplot
+pvals <- dba.plotBox(ATAC_diffbind_contrast)
+corvals <- dba.plotHeatmap(ATAC_diffbind_contrast, contrast=1, correlations=FALSE)
+
+#identifying sites unique to a sample group
+dba.plotVenn(ATAC_diffbind_contrast, contrast=3, bDB=TRUE, + bGain=TRUE, bLoss=TRUE, bAll=FALSE)
+
+#Profiled heatmap
+profiles <- dba.plotProfile(ATAC_diffbind_contrast, contrast=3)
+dba.plotProfile(profiles)
+
+#merged
+profiles <- dba.plotProfile(ATAC_diffbind_contrast, merge=DBA_TREATMENT) #find out what X is
+dba.plotProfile(profiles)
+
+#Unmerged sample
+mask.Mbovis <- ATAC_diffbind_contrast$masks$M_bovis
+mask.Control <- ATAC_diffbind_contrast$masks$Control
+profiles <- dba.plotProfile(ATAC_diffbind_contrast, samples=list(mask.Mbovis, mask.Control), merge=NULL)
+dba.plotProfile(profiles)
+
+#Summary bar chart 
+ggplot(DAB_Summary, aes(x = Contrast, y = DB.DESeq2)) +
+  labs(x = 'Experimental challenge contrast',
+       y = 'Number of differential affinity binding sites',
+       title = 'Differential affinity binding sites between challenges') +
+  geom_col(fill = '#80ccff') +
+  theme_bw() +
+  theme(panel.grid.major.y = element_blank(),
+          legend.position = 'off')
+
+
+
+#################### Peak annotation #####################
+#There are two ways to do this:
+#1; get the DAB report, and manually input coordinates into biomart, returing ensemble and ncbi gene ids, stands and coordinates
+#2; Use Homer annotate peaks. For large peaksets, I think this is the way. Because I made a mistake, I dont have strand info, so I input two sets of peaks at + and - strands in the following format, tab deliminated:
+PeakID	Chr	Start	    End	Strand	Mean concentration of reads	Concentration of Control reads	Concentration of M.bovis reads	Fold change	P value	FDR adjusted P value
+Plus_1	1	22598436	22598836	0	4.790212881				3.569480255						5.441836575						-1.364548179	0.000110761	0.044674681
+Plus_2	1	46169435	46169835	0	6.252102385				4.823055968						6.955755704						-1.828456783	5.54E-06	0.006504534
+
+#For this data, I took the DAB summary, fixed it into this format (code pending) and fliiped the fold change (Diffbind puts it at minus because affinty binding is less in control, which is really confusing)
+#Syntax is as follows:
+annotatePeaks.pl <peak/BED file> <genome>   > <output file>
+
+#Annotate peaks
+#REMEMBER: Your chromosome MUST BE IN THE SAME FORMAT AS THE GTF!!!! So chromosome 1 in your input should be NC_037329.1, not 1 or chr1
+annotatePeaks.pl M_bovis_vs_control_HOMER_input.txt GCF_002263795.1_ARS-UCD1.2_genomic.fasta -gff3 GCF_002263795.1_ARS-UCD1.2_genomic.gff > M_bovis_vs_control_HOMER_ATAC_annotated.csv
+
+M_bovis_vs_control_H3K27ac_HOMER_input.txt
