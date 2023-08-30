@@ -1,0 +1,858 @@
+#######################################################################################
+##############################   ChIP-seq pipeline  ###################################
+#######################################################################################
+####### Differential analysis: Diffbind #######
+#Seems to be the best way to get differential peak sets. I can also use this pipeline for
+#the ATAC-seq below.
+#NOTE : we lost AS41 h3k4me1 due to low library quantity 'As you will see, 001_0686_001 H3K4me1 was unfortunately unsuccessful and 
+#we couldn't obtain a library for this ChIP'
+
+#DiffBind provides functions for processing ChIP-Seq data enriched for genomic loci where specific
+#protein/DNA binding occurs, including peak sets identified by ChIP-Seq peak callers and
+#aligned sequence read datasets.
+#The primary emphasis of the package is on identifying sites that are differentially bound between two sample groups.
+#It includes functions to support the processing of peak sets,
+#including overlapping and merging peak sets, counting sequencing reads overlapping intervals
+#in peak sets, and identifying statistically significantly differentially bound sites based on
+#evidence of binding affinity (measured by differences in read densities).
+
+#There are five steps to obtaining results from diffBind:
+#1: Reading in peaksets
+#2: Occupancy analysis
+#3: Counting reads
+#4: Differential binding affinity analysis
+#5: Plotting and reporting
+
+#diffBind is EXTREMELY sensitive to syntax, so get everything right, in the right format or it will take you ages. 
+
+###############Reading in peaksets###############
+#diffBind requires a metadata file to load in the peaksets. This worked for me, however it took multiple tries. 
+#This was in .csv format. Alignment files were in .bam and peaksets in tab deliminated with the headers removed.
+
+SampleID	Tissue	Factor 	Condition	Treatment 	Replicate 	bamReads	ControlID	bamControl	Peaks	PeakCaller
+
+# load library 
+library(DiffBind)
+setwd('/home/workspace/thall/Analysis/UCD_EDIN_macrophage_project/ChIP-seq/Diffbind')
+
+#read in metadataset
+Sample_sheet <- read.csv('Sample_sheet.csv')
+names(Sample_sheet)
+
+#read metadataset as a dba object. Make sure your peak and bam files are pointed at by your sample sheet
+ChIP_diffbind_object <- dba(sampleSheet=Sample_sheet, peakFormat = 'bed')
+
+
+#show object. This shows how many peaks are in each peakset, as well as (in the first line) the total number of unique peaks after merging overlapping ones (3795), and the dimensions of
+#dba.plotPCA(default binding matrix of 11 samples by the 2845 sites that overlap in at least two of the samples.
+
+ChIP_diffbind_object
+plot(ChIP_diffbind_object)
+
+#Still dont know if I need this, must find out if it was already used as input
+#Application of a greylist might be valuable here. We can use our input reads as grey lists. Like below,
+#I think some parameter testing here is important. 
+#Most of the time, if your experiment has controls such as Input tracks, the greylist needs to
+#be computed specifically for the analysis. This can be accomplished using dba.blacklist to
+#invoke the GreyListChIP package automatically.
+
+#In the case of the bovine genome, I used the BSgenome forge to get the bovine genome object used 
+#to generate the black/greylist
+#ChIP_diffbind_object <- dba.blacklist(ChIP_diffbind_object)
+#ChIP_diffbind_object.greylist <- dba.blacklist(ChIP_diffbind_object, Retrieve=DBA_GREYLIST)
+
+
+
+#The next step is to calculate a binding matrix with scores based on read counts for every sample (affinity scores), rather than confidence scores for only those peaks called in a specific
+#sample (occupancy scores).  it is advisable to use the 'summits' option to re-center each peak around the point of greatest enrichment. This keeps the peaks at a consistent width (in this case,
+#with summits=250, the peaks will be 500bp, extending 250bp up- and down- stream of the summit)
+#Note DBA_FRIP DBApeaksetmetadata: Fraction of Reads in Peaks (number of reads in intervals divided by total number of reads in library)
+#bUseSummarizeOverlaps = logical indicating that summarizeOverlaps should be used for counting instead of the built-in counting code. This option is slower but uses the more standard counting function. 
+#If TRUE, all read files must be BAM (.bam extension), with associated index files (.bam.bai extension). The fragmentSize parameter must absent.
+ChIP_diffbind_count  <- dba.count(ChIP_diffbind_object, bUseSummarizeOverlaps=TRUE)
+ChIP_diffbind_count 
+
+
+#Then we need to normalise the data.
+#Upon reading the Diffbind manual, it seems that benchmarking normalisation is an important step
+#In particular, I might be able to use the CTCF binding as a 'Parallel factor normalization' method. 
+#However, I dont want to over normalise the data, and as such I should compare.
+
+#Deseq2 method
+ChIP_diffbind_count <- dba.normalize(ChIP_diffbind_count, method=DBA_DESEQ2, normalize=DBA_NORM_LIB, library=DBA_LIBSIZE_BACKGROUND, background=TRUE)
+
+#Before running the differential analysis, we need to tell DiffBind which cell lines fall in which groups. This is done using the dba.contrast function, as follows:
+#By default diffBind will not accept less than 3 coniditions, so for infected/control we need to set minMembers = 2
+ChIP_diffbind_contrast <- dba.contrast(ChIP_diffbind_count, categories=DBA_TREATMENT, minMembers = 2)
+
+#This will run an DESeq2 analysis (see subsequent section discussing the technical details of the analysis) using the default binding matrix.
+ChIP_diffbind_contrast <- dba.analyze(ChIP_diffbind_contrast)
+
+#To see a summary of results for each tool we can use 
+dba.show(ChIP_diffbind_contrast, bContrasts=T)
+
+
+#######################Retrieving the differentially bound sites###############
+#The final step is to retrieve the differentially bound sites
+ChIP_diffbind_contrast.DB <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, bCalled=T, bCounts=T)
+Possible_contrasts <- dba.show(ChIP_diffbind_contrast, bContrasts=T)
+View(Possible_contrasts)
+
+#MA plot (see contrast numbers for plotting each contrast)
+dba.plotMA(ChIP_diffbind_contrast , contrast=X)
+
+#Control contrasts
+#To extract the full results from DESeq2 we use dba.report:
+res_M_bovis_vs_control_H3K27ac <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 29, th=0.05)
+res_M_bovis_vs_control_H3K27me3 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 52, th=0.05)
+res_M_bovis_vs_control_H3K4me1 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 90, th=0.05)
+res_M_bovis_vs_control_H3K4me3 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 94, th=0.05)
+res_M_tuberculosis_vs_control_H3K27ac_R <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 143, th=0.05)
+res_M_tuberculosis_vs_control_H3K27me3 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 161, th=0.05)
+res_M_tuberculosis_vs_control_H3K4me1 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 299, th=0.05)
+res_M_tuberculosis_vs_control_H3K4me3_R <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 179, th=0.05)
+res_Irradiated_vs_control_H3K27ac_R <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 133, th=0.05)
+res_Irradiated_vs_control_H3K27me3_R <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 151, th=0.05)
+res_Irradiated_vs_control_H3K4me1 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 234, th=0.05)
+res_Irradiated_vs_control_H3K4me3_R <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 169, th=0.05)
+res_BCG_vs_control_H3K27ac_R <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 138, th=0.05)
+res_BCG_vs_control_H3K27me3 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 156, th=0.05)
+res_BCG_vs_control_H3K4me1 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 279, th=0.05)
+res_BCG_vs_control_H3K4me3_R <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 174, th=0.05)
+
+#Infection contrasts
+res_M_bovis_vs_M_tuberculosis_H3K27ac <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 43, th=0.05)
+res_M_bovis_vs_M_tuberculosis_H3K27me3 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 66, th=0.05)
+res_M_bovis_vs_M_tuberculosis_H3K4me1 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 88, th=0.05)
+res_M_bovis_vs_M_tuberculosis_H3K4me3 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 109, th=0.05)
+res_M_bovis_vs_Irradiated_H3K27ac <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 33, th=0.05)
+res_M_bovis_vs_Irradiated_H3K27me3 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 56, th=0.05)
+res_M_bovis_vs_Irradiated_H3K4me1 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 78, th=0.05)
+res_M_bovis_vs_Irradiated_H3K4me3 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 99, th=0.05)
+res_M_bovis_vs_BCG_CTCF <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 14, th=0.05)
+res_M_bovis_vs_BCG_H3K27ac <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 38, th=0.05)
+res_M_bovis_vs_BCG_H3K27me3 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 83, th=0.05)
+res_M_bovis_vs_BCG_H3K4me1 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 21, th=0.05)
+res_M_bovis_vs_BCG_H3K4me3 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 104, th=0.05)
+res_M_tuberculosis_vs_BCG_CTCF <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 250, th=0.05)
+res_M_tuberculosis_vs_BCG_H3K27ac_R <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 260, th=0.05)
+res_M_tuberculosis_vs_BCG_H3K27me3_R <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 269, th=0.05)
+res_M_tuberculosis_vs_BCG_H3K4me1_R <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 277, th=0.05)
+res_M_tuberculosis_vs_BCG_H3K4me3_R <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 284, th=0.05)
+res_Irradiated_vs_BCG_CTCF <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 185, th=0.05)
+res_Irradiated_vs_BCG_H3K27ac <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 200, th=0.05)
+res_Irradiated_vs_BCG_H3K27me3 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 214, th=0.05)
+res_Irradiated_vs_BCG_H3K4me1 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 227, th=0.05)
+res_Irradiated_vs_BCG_H3K4me3 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 239, th=0.05)
+res_Irradiated_vs_M_tuberculosis_CTCF <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 190, th=0.05)
+res_Irradiated_vs_M_tuberculosis_H3K27ac <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 205, th=0.05)
+res_Irradiated_vs_M_tuberculosis_H3K27me3 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 219, th=0.05)
+res_Irradiated_vs_M_tuberculosis_H3K4me1 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 232, th=0.05)
+res_Irradiated_vs_M_tuberculosis_H3K4me3 <- dba.report(ChIP_diffbind_contrast, method=DBA_DESEQ2, contrast = 244, th=0.05)
+
+
+
+#values in the report:
+#Conc: mean read concentration over all the samples (the default calculation uses log2 normalized ChIP read counts with control read counts subtracted)
+#Conc_Nanog: mean concentration over the first group
+#Conc_Pou5f1: mean concentration over the second group
+#Fold: shows the difference in mean concentrations between the two groups, with a positive value indicating increased binding affinity in the 1st group 
+#and a negative value indicating increased binding affinity in the second group (i have flipped them around for ease of viewing)
+
+# Write to file (control)
+res_M_bovis_vs_control_H3K27ac_DF <- as.data.frame(res_M_bovis_vs_control_H3K27ac)
+res_M_bovis_vs_control_H3K27me3_DF <-as.data.frame(res_M_bovis_vs_control_H3K27me3)
+res_M_bovis_vs_control_H3K4me1_DF <- as.data.frame(res_M_bovis_vs_control_H3K4me1)
+res_M_bovis_vs_control_H3K4me3_DF <- as.data.frame(res_M_bovis_vs_control_H3K4me3)
+res_M_tuberculosis_vs_control_H3K27ac_R_DF <- as.data.frame(res_M_tuberculosis_vs_control_H3K27ac_R)
+res_M_tuberculosis_vs_control_H3K27me3_DF <-  as.data.frame(res_M_tuberculosis_vs_control_H3K27me3)
+res_M_tuberculosis_vs_control_H3K4me1_DF <-   as.data.frame(res_M_tuberculosis_vs_control_H3K4me1)
+res_M_tuberculosis_vs_control_H3K4me3_R_DF <- as.data.frame(res_M_tuberculosis_vs_control_H3K4me3_R)
+res_Irradiated_vs_control_H3K27ac_R_DF <- as.data.frame(res_Irradiated_vs_control_H3K27ac_R)
+res_Irradiated_vs_control_H3K27me3_R_DF <-as.data.frame(res_Irradiated_vs_control_H3K27me3_R)
+res_Irradiated_vs_control_H3K4me1_DF <- as.data.frame(res_Irradiated_vs_control_H3K4me1)
+res_Irradiated_vs_control_H3K4me3_R_DF <- as.data.frame(res_Irradiated_vs_control_H3K4me3_R)
+res_BCG_vs_control_H3K27ac_R_DF <- as.data.frame(res_BCG_vs_control_H3K27ac_R)
+res_BCG_vs_control_H3K27me3_DF <-  as.data.frame(res_BCG_vs_control_H3K27me3)
+res_BCG_vs_control_H3K4me1_DF <-   as.data.frame(res_BCG_vs_control_H3K4me1)
+res_BCG_vs_control_H3K4me3_R_DF <- as.data.frame(res_BCG_vs_control_H3K4me3_R)
+
+
+write.csv(res_M_bovis_vs_control_H3K27ac_DF, file='res_M_bovis_vs_control_H3K27ac_DF.csv', quote=F, row.names=F)
+write.csv(res_M_bovis_vs_control_H3K27me3_DF, file='res_M_bovis_vs_control_H3K27me3_DF.csv', quote=F, row.names=F)
+write.csv(res_M_bovis_vs_control_H3K4me1_DF, file='res_M_bovis_vs_control_H3K4me1_DF.csv', quote=F, row.names=F)
+write.csv(res_M_bovis_vs_control_H3K4me3_DF, file='res_M_bovis_vs_control_H3K4me3_DF.csv', quote=F, row.names=F)
+write.csv(res_M_tuberculosis_vs_control_H3K27ac_R_DF, file='res_M_tuberculosis_vs_control_H3K27ac_R_DF.csv', quote=F, row.names=F)
+write.csv(res_M_tuberculosis_vs_control_H3K27me3_DF, file='res_M_tuberculosis_vs_control_H3K27me3_DF.csv', quote=F, row.names=F)
+write.csv(res_M_tuberculosis_vs_control_H3K4me1_DF, file='res_M_tuberculosis_vs_control_H3K4me1_DF.csv', quote=F, row.names=F)
+write.csv(res_M_tuberculosis_vs_control_H3K4me3_R_DF, file='res_M_tuberculosis_vs_control_H3K4me3_R_DF.csv', quote=F, row.names=F) 
+write.csv(res_Irradiated_vs_control_H3K27ac_R_DF, file='res_Irradiated_vs_control_H3K27ac_R_DF.csv', quote=F, row.names=F) 
+write.csv(res_Irradiated_vs_control_H3K27me3_R_DF, file='res_Irradiated_vs_control_H3K27me3_R_DF.csv', quote=F, row.names=F)
+write.csv(res_Irradiated_vs_control_H3K4me1_DF, file='res_Irradiated_vs_control_H3K4me1_DF.csv', quote=F, row.names=F) 
+write.csv(res_Irradiated_vs_control_H3K4me3_R_DF, file='res_Irradiated_vs_control_H3K4me3_R_DF.csv', quote=F, row.names=F) 
+write.csv(res_BCG_vs_control_H3K27ac_R_DF, file='res_BCG_vs_control_H3K27ac_R_DF.csv', quote=F, row.names=F)
+write.csv(res_BCG_vs_control_H3K27me3_DF, file='res_BCG_vs_control_H3K27me3_DF.csv', quote=F, row.names=F) 
+write.csv(res_BCG_vs_control_H3K4me1_DF, file='res_BCG_vs_control_H3K4me1_DF.csv', quote=F, row.names=F) 
+write.csv(res_BCG_vs_control_H3K4me3_R_DF, file='res_BCG_vs_control_H3K4me3_R_DF.csv', quote=F, row.names=F)
+
+# Write to file (infection)
+res_M_bovis_vs_M_tuberculosis_H3K27ac_DF <- as.data.frame(res_M_bovis_vs_M_tuberculosis_H3K27ac)
+res_M_bovis_vs_M_tuberculosis_H3K27me3_DF <- as.data.frame(res_M_bovis_vs_M_tuberculosis_H3K27me3)
+res_M_bovis_vs_M_tuberculosis_H3K4me1_DF <- as.data.frame(res_M_bovis_vs_M_tuberculosis_H3K4me1)
+res_M_bovis_vs_M_tuberculosis_H3K4me3_DF <- as.data.frame(res_M_bovis_vs_M_tuberculosis_H3K4me3)
+res_M_bovis_vs_Irradiated_H3K27ac_DF <- as.data.frame(res_M_bovis_vs_Irradiated_H3K27ac)
+res_M_bovis_vs_Irradiated_H3K27me3_DF <- as.data.frame(res_M_bovis_vs_Irradiated_H3K27me3)
+res_M_bovis_vs_Irradiated_H3K4me1_DF <- as.data.frame(res_M_bovis_vs_Irradiated_H3K4me1)
+res_M_bovis_vs_Irradiated_H3K4me3_DF <- as.data.frame(res_M_bovis_vs_Irradiated_H3K4me3)
+res_M_bovis_vs_BCG_CTCF_DF <- as.data.frame(res_M_bovis_vs_BCG_CTCF)
+res_M_bovis_vs_BCG_H3K27ac_DF <- as.data.frame(res_M_bovis_vs_BCG_H3K27ac)
+res_M_bovis_vs_BCG_H3K27me3_DF <- as.data.frame(res_M_bovis_vs_BCG_H3K27me3)
+res_M_bovis_vs_BCG_H3K4me1_DF <- as.data.frame(res_M_bovis_vs_BCG_H3K4me1)
+res_M_bovis_vs_BCG_H3K4me3_DF <- as.data.frame(res_M_bovis_vs_BCG_H3K4me3)
+res_M_tuberculosis_vs_BCG_CTCF_DF <- as.data.frame(res_M_tuberculosis_vs_BCG_CTCF)
+res_M_tuberculosis_vs_BCG_H3K27ac_R_DF <- as.data.frame(res_M_tuberculosis_vs_BCG_H3K27ac_R)
+res_M_tuberculosis_vs_BCG_H3K27me3_R_DF <- as.data.frame(res_M_tuberculosis_vs_BCG_H3K27me3_R)
+res_M_tuberculosis_vs_BCG_H3K4me1_R_DF <- as.data.frame(res_M_tuberculosis_vs_BCG_H3K4me1_R)
+res_M_tuberculosis_vs_BCG_H3K4me3_R_DF <- as.data.frame(res_M_tuberculosis_vs_BCG_H3K4me3_R)
+res_Irradiated_vs_BCG_CTCF_DF <- as.data.frame(res_Irradiated_vs_BCG_CTCF)
+res_Irradiated_vs_BCG_H3K27ac_DF <- as.data.frame(res_Irradiated_vs_BCG_H3K27ac)
+res_Irradiated_vs_BCG_H3K27me3_DF <- as.data.frame(res_Irradiated_vs_BCG_H3K27me3)
+res_Irradiated_vs_BCG_H3K4me1_DF <- as.data.frame(res_Irradiated_vs_BCG_H3K4me1)
+res_Irradiated_vs_BCG_H3K4me3_DF <- as.data.frame(res_Irradiated_vs_BCG_H3K4me3)
+res_Irradiated_vs_M_tuberculosis_CTCF_DF <- as.data.frame(res_Irradiated_vs_M_tuberculosis_CTCF)
+res_Irradiated_vs_M_tuberculosis_H3K27ac_DF <- as.data.frame(res_Irradiated_vs_M_tuberculosis_H3K27ac)
+res_Irradiated_vs_M_tuberculosis_H3K27me3_DF <- as.data.frame(res_Irradiated_vs_M_tuberculosis_H3K27me3)
+res_Irradiated_vs_M_tuberculosis_H3K4me1_DF <- as.data.frame(res_Irradiated_vs_M_tuberculosis_H3K4me1)
+res_Irradiated_vs_M_tuberculosis_H3K4me3_DF <- as.data.frame(res_Irradiated_vs_M_tuberculosis_H3K4me3)
+
+write.csv(res_M_bovis_vs_M_tuberculosis_H3K27ac_DF, 	file='res_M_bovis_vs_M_tuberculosis_H3K27ac.csv', quote=F, row.names=F)
+write.csv(res_M_bovis_vs_M_tuberculosis_H3K27me3_DF, 	file='res_M_bovis_vs_M_tuberculosis_H3K27me3.csv', quote=F, row.names=F)
+write.csv(res_M_bovis_vs_M_tuberculosis_H3K4me1_DF, 	file='res_M_bovis_vs_M_tuberculosis_H3K4me1.csv', quote=F, row.names=F)
+write.csv(res_M_bovis_vs_M_tuberculosis_H3K4me3_DF, 	file='res_M_bovis_vs_M_tuberculosis_H3K4me3.csv', quote=F, row.names=F)
+write.csv(res_M_bovis_vs_Irradiated_H3K27ac_DF, 		file='res_M_bovis_vs_Irradiated_H3K27ac.csv', quote=F, row.names=F)
+write.csv(res_M_bovis_vs_Irradiated_H3K27me3_DF, 		file='res_M_bovis_vs_Irradiated_H3K27me3.csv', quote=F, row.names=F)
+write.csv(res_M_bovis_vs_Irradiated_H3K4me1_DF, 		file='res_M_bovis_vs_Irradiated_H3K4me1.csv', quote=F, row.names=F)
+write.csv(res_M_bovis_vs_Irradiated_H3K4me3_DF, 		file='res_M_bovis_vs_Irradiated_H3K4me3.csv', quote=F, row.names=F) 
+write.csv(res_M_bovis_vs_BCG_CTCF_DF, 					file='res_M_bovis_vs_BCG_CTCF.csv', quote=F, row.names=F) 
+write.csv(res_M_bovis_vs_BCG_H3K27ac_DF, 				file='res_M_bovis_vs_BCG_H3K27ac.csv', quote=F, row.names=F)
+write.csv(res_M_bovis_vs_BCG_H3K27me3_DF, 				file='res_M_bovis_vs_BCG_H3K27me3.csv', quote=F, row.names=F) 
+write.csv(res_M_bovis_vs_BCG_H3K4me1_DF, 				file='res_M_bovis_vs_BCG_H3K4me1.csv', quote=F, row.names=F) 
+write.csv(res_M_bovis_vs_BCG_H3K4me3_DF, 				file='res_M_bovis_vs_BCG_H3K4me3.csv', quote=F, row.names=F)
+write.csv(res_M_tuberculosis_vs_BCG_CTCF_DF, 			file='res_M_tuberculosis_vs_BCG_CTCF.csv', quote=F, row.names=F) 
+write.csv(res_M_tuberculosis_vs_BCG_H3K27ac_R_DF, 		file='res_M_tuberculosis_vs_BCG_H3K27ac_R.csv', quote=F, row.names=F) 
+write.csv(res_M_tuberculosis_vs_BCG_H3K27me3_R_DF, 		file='res_M_tuberculosis_vs_BCG_H3K27me3_R.csv', quote=F, row.names=F)
+write.csv(res_M_tuberculosis_vs_BCG_H3K4me1_R_DF, 		file='res_M_tuberculosis_vs_BCG_H3K4me1_R.csv', quote=F, row.names=F) 
+write.csv(res_M_tuberculosis_vs_BCG_H3K4me3_R_DF, 		file='res_M_tuberculosis_vs_BCG_H3K4me3_R.csv', quote=F, row.names=F) 
+write.csv(res_Irradiated_vs_BCG_CTCF_DF, 				file='res_Irradiated_vs_BCG_CTCF.csv', quote=F, row.names=F)
+write.csv(res_Irradiated_vs_BCG_H3K27ac_DF, 			file='res_Irradiated_vs_BCG_H3K27ac.csv', quote=F, row.names=F) 
+write.csv(res_Irradiated_vs_BCG_H3K27me3_DF, 			file='res_Irradiated_vs_BCG_H3K27me3.csv', quote=F, row.names=F) 
+write.csv(res_Irradiated_vs_BCG_H3K4me1_DF, 			file='res_Irradiated_vs_BCG_H3K4me1.csv', quote=F, row.names=F)
+write.csv(res_Irradiated_vs_BCG_H3K4me3_DF, 			file='res_Irradiated_vs_BCG_H3K4me3.csv', quote=F, row.names=F) 
+write.csv(res_Irradiated_vs_M_tuberculosis_CTCF_DF, 	file='res_Irradiated_vs_M_tuberculosis_CTCF.csv', quote=F, row.names=F) 
+write.csv(res_Irradiated_vs_M_tuberculosis_H3K27ac_DF, 	file='res_Irradiated_vs_M_tuberculosis_H3K27ac.csv', quote=F, row.names=F)
+write.csv(res_Irradiated_vs_M_tuberculosis_H3K27me3_DF, file='res_Irradiated_vs_M_tuberculosis_H3K27me3.csv', quote=F, row.names=F) 
+write.csv(res_Irradiated_vs_M_tuberculosis_H3K4me1_DF, 	file='res_Irradiated_vs_M_tuberculosis_H3K4me1.csv', quote=F, row.names=F) 
+write.csv(res_Irradiated_vs_M_tuberculosis_H3K4me3_DF, 	file='res_Irradiated_vs_M_tuberculosis_H3K4me3.csv', quote=F, row.names=F)
+
+
+# Create bed files for each keeping only significant peaks (p < 0.05) for downstream visualisation
+
+#res_M_bovis_vs_control_enrich <- res_M_bovis_vs_control_DF %>% 
+#  filter(FDR < 0.05 & Fold < 0) %>% 
+#  select(seqnames, start, end)
+
+#  select(seqnames, start, end)  
+ 
+  
+# Write to file
+#write.table(res_M_bovis_vs_control_enrich, file='M_bovis_vs_control.bed', sep='\t', quote=F, row.names=F, col.names=F)
+
+#################### Peak annotation #####################
+#There are two ways to do this:
+#1; get the DAB report, and manually input coordinates into biomart, returing ensemble and ncbi gene ids, stands and coordinates
+#2; Use Homer annotate peaks. For large peaksets, I think this is the way. Because I made a mistake, I dont have strand info, so I input two sets of peaks at + and - strands in the following format, tab deliminated:
+PeakID	Chr	Start	    End	Strand	Mean concentration of reads	Concentration of Control reads	Concentration of M.bovis reads	Fold change	P value	FDR adjusted P value
+Plus_1	1	22598436	22598836	0	4.790212881				3.569480255						5.441836575						-1.364548179	0.000110761	0.044674681
+Plus_2	1	46169435	46169835	0	6.252102385				4.823055968						6.955755704						-1.828456783	5.54E-06	0.006504534
+
+#Given the amount of datasets I have, I think its wise to code this format:
+res_M_bovis_vs_control_H3K27ac_DF[, 12] <- rownames(res_M_bovis_vs_control_H3K27ac_DF)
+M_bovis_vs_control_H3K27ac_HOMER   <- res_M_bovis_vs_control_H3K27ac_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_bovis_vs_control_H3K27ac_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_bovis_vs_control_H3K27ac_HOMER_input <- M_bovis_vs_control_H3K27ac_HOMER
+M_bovis_vs_control_H3K27ac_HOMER_input$Strand <- 0
+#M_bovis_vs_control_H3K27ac_HOMER_input$PeakID <- sub('^', 'Plus', M_bovis_vs_control_H3K27ac_HOMER_input$PeakID )
+#M_bovis_vs_control_H3K27ac_HOMER$Strand <- 1
+#M_bovis_vs_control_H3K27ac_HOMER$PeakID  <- sub('^', 'Minus', M_bovis_vs_control_H3K27ac_HOMER$PeakID )
+#M_bovis_vs_control_H3K27ac_HOMER_input <- rbind(M_bovis_vs_control_H3K27ac_HOMER_input, M_bovis_vs_control_H3K27ac_HOMER)
+write.table(M_bovis_vs_control_H3K27ac_HOMER_input, 	file='M_bovis_vs_control_H3K27ac_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_bovis_vs_control_H3K4me1_DF[, 12] <- rownames(res_M_bovis_vs_control_H3K4me1_DF)
+M_bovis_vs_control_H3K4me1_HOMER   <- res_M_bovis_vs_control_H3K4me1_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_bovis_vs_control_H3K4me1_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_bovis_vs_control_H3K4me1_HOMER_input <- M_bovis_vs_control_H3K4me1_HOMER
+M_bovis_vs_control_H3K4me1_HOMER_input$Strand <- 0
+#M_bovis_vs_control_H3K4me1_HOMER_input$PeakID <- sub('^', 'Plus', M_bovis_vs_control_H3K4me1_HOMER_input$PeakID )
+#M_bovis_vs_control_H3K4me1_HOMER$Strand <- 1
+#M_bovis_vs_control_H3K4me1_HOMER$PeakID  <- sub('^', 'Minus', M_bovis_vs_control_H3K4me1_HOMER$PeakID )
+#M_bovis_vs_control_H3K4me1_HOMER_input <- rbind(M_bovis_vs_control_H3K4me1_HOMER_input, M_bovis_vs_control_H3K4me1_HOMER)
+write.table(M_bovis_vs_control_H3K4me1_HOMER_input, 	file='M_bovis_vs_control_H3K4me1_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_bovis_vs_control_H3K4me3_DF[, 12] <- rownames(res_M_bovis_vs_control_H3K4me3_DF)
+M_bovis_vs_control_H3K4me3_HOMER   <- res_M_bovis_vs_control_H3K4me3_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_bovis_vs_control_H3K4me3_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_bovis_vs_control_H3K4me3_HOMER_input <- M_bovis_vs_control_H3K4me3_HOMER
+M_bovis_vs_control_H3K4me3_HOMER_input$Strand <- 0
+#M_bovis_vs_control_H3K4me3_HOMER_input$PeakID <- sub('^', 'Plus', M_bovis_vs_control_H3K4me3_HOMER_input$PeakID )
+#M_bovis_vs_control_H3K4me3_HOMER$Strand <- 1
+#M_bovis_vs_control_H3K4me3_HOMER$PeakID  <- sub('^', 'Minus', M_bovis_vs_control_H3K4me3_HOMER$PeakID )
+#M_bovis_vs_control_H3K4me3_HOMER_input <- rbind(M_bovis_vs_control_H3K4me3_HOMER_input, M_bovis_vs_control_H3K4me3_HOMER)
+write.table(M_bovis_vs_control_H3K4me3_HOMER_input, 	file='M_bovis_vs_control_H3K4me3_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_tuberculosis_vs_control_H3K27ac_R_DF[, 12] <- rownames(res_M_tuberculosis_vs_control_H3K27ac_R_DF)
+M_tuberculosis_vs_control_H3K27ac_R_HOMER   <- res_M_tuberculosis_vs_control_H3K27ac_R_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_tuberculosis_vs_control_H3K27ac_R_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_tuberculosis_vs_control_H3K27ac_R_HOMER_input <- M_tuberculosis_vs_control_H3K27ac_R_HOMER
+M_tuberculosis_vs_control_H3K27ac_R_HOMER_input$Strand <- 0
+#M_tuberculosis_vs_control_H3K27ac_R_HOMER_input$PeakID <- sub('^', 'Plus', M_tuberculosis_vs_control_H3K27ac_R_HOMER_input$PeakID )
+#M_tuberculosis_vs_control_H3K27ac_R_HOMER$Strand <- 1
+#M_tuberculosis_vs_control_H3K27ac_R_HOMER$PeakID  <- sub('^', 'Minus', M_tuberculosis_vs_control_H3K27ac_R_HOMER$PeakID )
+#M_tuberculosis_vs_control_H3K27ac_R_HOMER_input <- rbind(M_tuberculosis_vs_control_H3K27ac_R_HOMER_input, M_tuberculosis_vs_control_H3K27ac_R_HOMER)
+write.table(M_tuberculosis_vs_control_H3K27ac_R_HOMER_input, 	file='M_tuberculosis_vs_control_H3K27ac_R_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+#res_M_tuberculosis_vs_control_H3K27me3_DF[, 12] <- rownames(res_M_tuberculosis_vs_control_H3K27me3_DF)
+#M_tuberculosis_vs_control_H3K27me3_HOMER   <- res_M_tuberculosis_vs_control_H3K27me3_DF[, c(12,1:3,5,6,8,7,9:11)]
+#colnames(M_tuberculosis_vs_control_H3K27me3_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+#M_tuberculosis_vs_control_H3K27me3_HOMER_input <- M_tuberculosis_vs_control_H3K27me3_HOMER
+#M_tuberculosis_vs_control_H3K27me3_HOMER_input$Strand <- 0
+#M_tuberculosis_vs_control_H3K27me3_HOMER_input$PeakID <- sub('^', 'Plus', M_tuberculosis_vs_control_H3K27me3_HOMER_input$PeakID )
+#M_tuberculosis_vs_control_H3K27me3_HOMER$Strand <- 1
+#M_tuberculosis_vs_control_H3K27me3_HOMER$PeakID  <- sub('^', 'Minus', M_tuberculosis_vs_control_H3K27me3_HOMER$PeakID )
+#M_tuberculosis_vs_control_H3K27me3_HOMER_input <- rbind(M_tuberculosis_vs_control_H3K27me3_HOMER_input, M_tuberculosis_vs_control_H3K27me3_HOMER)
+#write.table(M_tuberculosis_vs_control_H3K27me3_HOMER_input, 	file='M_tuberculosis_vs_control_H3K27me3_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_tuberculosis_vs_control_H3K4me1_DF[, 12] <- rownames(res_M_tuberculosis_vs_control_H3K4me1_DF)
+M_tuberculosis_vs_control_H3K4me1_HOMER   <- res_M_tuberculosis_vs_control_H3K4me1_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_tuberculosis_vs_control_H3K4me1_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_tuberculosis_vs_control_H3K4me1_HOMER_input <- M_tuberculosis_vs_control_H3K4me1_HOMER
+M_tuberculosis_vs_control_H3K4me1_HOMER_input$Strand <- 0
+#M_tuberculosis_vs_control_H3K4me1_HOMER_input$PeakID <- sub('^', 'Plus', M_tuberculosis_vs_control_H3K4me1_HOMER_input$PeakID )
+#M_tuberculosis_vs_control_H3K4me1_HOMER$Strand <- 1
+#M_tuberculosis_vs_control_H3K4me1_HOMER$PeakID  <- sub('^', 'Minus', M_tuberculosis_vs_control_H3K4me1_HOMER$PeakID )
+#M_tuberculosis_vs_control_H3K4me1_HOMER_input <- rbind(M_tuberculosis_vs_control_H3K4me1_HOMER_input, M_tuberculosis_vs_control_H3K4me1_HOMER)
+write.table(M_tuberculosis_vs_control_H3K4me1_HOMER_input, 	file='M_tuberculosis_vs_control_H3K4me1_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+#res_M_tuberculosis_vs_control_H3K4me3_R_DF[, 12] <- rownames(res_M_tuberculosis_vs_control_H3K4me3_R_DF)
+#M_tuberculosis_vs_control_H3K4me3_R_HOMER   <- res_M_tuberculosis_vs_control_H3K4me3_R_DF[, c(12,1:3,5,6,8,7,9:11)]
+#colnames(M_tuberculosis_vs_control_H3K4me3_R_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+#M_tuberculosis_vs_control_H3K4me3_R_HOMER_input <- M_tuberculosis_vs_control_H3K4me3_R_HOMER
+#M_tuberculosis_vs_control_H3K4me3_R_HOMER_input$Strand <- 0
+#M_tuberculosis_vs_control_H3K4me3_R_HOMER_input$PeakID <- sub('^', 'Plus', M_tuberculosis_vs_control_H3K4me3_R_HOMER_input$PeakID )
+#M_tuberculosis_vs_control_H3K4me3_R_HOMER$Strand <- 1
+#M_tuberculosis_vs_control_H3K4me3_R_HOMER$PeakID  <- sub('^', 'Minus', M_tuberculosis_vs_control_H3K4me3_R_HOMER$PeakID )
+#M_tuberculosis_vs_control_H3K4me3_R_HOMER_input <- rbind(M_tuberculosis_vs_control_H3K4me3_R_HOMER_input, M_tuberculosis_vs_control_H3K4me3_R_HOMER)
+#write.table(M_tuberculosis_vs_control_H3K4me3_R_HOMER_input, 	file='M_tuberculosis_vs_control_H3K4me3_R_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_Irradiated_vs_control_H3K27ac_R_DF[, 12] <- rownames(res_Irradiated_vs_control_H3K27ac_R_DF)
+Irradiated_vs_control_H3K27ac_R_HOMER   <- res_Irradiated_vs_control_H3K27ac_R_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(Irradiated_vs_control_H3K27ac_R_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+Irradiated_vs_control_H3K27ac_R_HOMER_input <- Irradiated_vs_control_H3K27ac_R_HOMER
+Irradiated_vs_control_H3K27ac_R_HOMER_input$Strand <- 0
+#Irradiated_vs_control_H3K27ac_R_HOMER_input$PeakID <- sub('^', 'Plus', Irradiated_vs_control_H3K27ac_R_HOMER_input$PeakID )
+#Irradiated_vs_control_H3K27ac_R_HOMER$Strand <- 1
+#Irradiated_vs_control_H3K27ac_R_HOMER$PeakID  <- sub('^', 'Minus', Irradiated_vs_control_H3K27ac_R_HOMER$PeakID )
+#Irradiated_vs_control_H3K27ac_R_HOMER_input <- rbind(Irradiated_vs_control_H3K27ac_R_HOMER_input, Irradiated_vs_control_H3K27ac_R_HOMER)
+write.table(Irradiated_vs_control_H3K27ac_R_HOMER_input, 	file='Irradiated_vs_control_H3K27ac_R_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+#res_Irradiated_vs_control_H3K27me3_R_DF[, 12] <- rownames(res_Irradiated_vs_control_H3K27me3_R_DF)
+#Irradiated_vs_control_H3K27me3_R_HOMER   <- res_Irradiated_vs_control_H3K27me3_R_DF[, c(12,1:3,5,6,8,7,9:11)]
+#colnames(Irradiated_vs_control_H3K27me3_R_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+#Irradiated_vs_control_H3K27me3_R_HOMER_input <- Irradiated_vs_control_H3K27me3_R_HOMER
+#Irradiated_vs_control_H3K27me3_R_HOMER_input$Strand <- 0
+#Irradiated_vs_control_H3K27me3_R_HOMER_input$PeakID <- sub('^', 'Plus', Irradiated_vs_control_H3K27me3_R_HOMER_input$PeakID )
+#Irradiated_vs_control_H3K27me3_R_HOMER$Strand <- 1
+#Irradiated_vs_control_H3K27me3_R_HOMER$PeakID  <- sub('^', 'Minus', Irradiated_vs_control_H3K27me3_R_HOMER$PeakID )
+#Irradiated_vs_control_H3K27me3_R_HOMER_input <- rbind(Irradiated_vs_control_H3K27me3_R_HOMER_input, Irradiated_vs_control_H3K27me3_R_HOMER)
+#write.table(Irradiated_vs_control_H3K27me3_R_HOMER_input, 	file='Irradiated_vs_control_H3K27me3_R_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_Irradiated_vs_control_H3K4me1_DF[, 12] <- rownames(res_Irradiated_vs_control_H3K4me1_DF)
+Irradiated_vs_control_H3K4me1_HOMER   <- res_Irradiated_vs_control_H3K4me1_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(Irradiated_vs_control_H3K4me1_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+Irradiated_vs_control_H3K4me1_HOMER_input <- Irradiated_vs_control_H3K4me1_HOMER
+Irradiated_vs_control_H3K4me1_HOMER_input$Strand <- 0
+#Irradiated_vs_control_H3K4me1_HOMER_input$PeakID <- sub('^', 'Plus', Irradiated_vs_control_H3K4me1_HOMER_input$PeakID )
+#Irradiated_vs_control_H3K4me1_HOMER$Strand <- 1
+#Irradiated_vs_control_H3K4me1_HOMER$PeakID  <- sub('^', 'Minus', Irradiated_vs_control_H3K4me1_HOMER$PeakID )
+#Irradiated_vs_control_H3K4me1_HOMER_input <- rbind(Irradiated_vs_control_H3K4me1_HOMER_input, Irradiated_vs_control_H3K4me1_HOMER)
+write.table(Irradiated_vs_control_H3K4me1_HOMER_input, 	file='Irradiated_vs_control_H3K4me1_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_Irradiated_vs_control_H3K4me3_R_DF[, 12] <- rownames(res_Irradiated_vs_control_H3K4me3_R_DF)
+Irradiated_vs_control_H3K4me3_R_HOMER   <- res_Irradiated_vs_control_H3K4me3_R_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(Irradiated_vs_control_H3K4me3_R_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+Irradiated_vs_control_H3K4me3_R_HOMER_input <- Irradiated_vs_control_H3K4me3_R_HOMER
+Irradiated_vs_control_H3K4me3_R_HOMER_input$Strand <- 0
+#Irradiated_vs_control_H3K4me3_R_HOMER_input$PeakID <- sub('^', 'Plus', Irradiated_vs_control_H3K4me3_R_HOMER_input$PeakID )
+#Irradiated_vs_control_H3K4me3_R_HOMER$Strand <- 1
+#Irradiated_vs_control_H3K4me3_R_HOMER$PeakID  <- sub('^', 'Minus', Irradiated_vs_control_H3K4me3_R_HOMER$PeakID )
+#Irradiated_vs_control_H3K4me3_R_HOMER_input <- rbind(Irradiated_vs_control_H3K4me3_R_HOMER_input, Irradiated_vs_control_H3K4me3_R_HOMER)
+write.table(Irradiated_vs_control_H3K4me3_R_HOMER_input, 	file='Irradiated_vs_control_H3K4me3_R_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_BCG_vs_control_H3K27ac_R_DF[, 12] <- rownames(res_BCG_vs_control_H3K27ac_R_DF)
+BCG_vs_control_H3K27ac_R_HOMER   <- res_BCG_vs_control_H3K27ac_R_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(BCG_vs_control_H3K27ac_R_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+BCG_vs_control_H3K27ac_R_HOMER_input <- BCG_vs_control_H3K27ac_R_HOMER
+BCG_vs_control_H3K27ac_R_HOMER_input$Strand <- 0
+#BCG_vs_control_H3K27ac_R_HOMER_input$PeakID <- sub('^', 'Plus', BCG_vs_control_H3K27ac_R_HOMER_input$PeakID )
+#BCG_vs_control_H3K27ac_R_HOMER$Strand <- 1
+#BCG_vs_control_H3K27ac_R_HOMER$PeakID  <- sub('^', 'Minus', BCG_vs_control_H3K27ac_R_HOMER$PeakID )
+#BCG_vs_control_H3K27ac_R_HOMER_input <- rbind(BCG_vs_control_H3K27ac_R_HOMER_input, BCG_vs_control_H3K27ac_R_HOMER)
+write.table(BCG_vs_control_H3K27ac_R_HOMER_input, 	file='BCG_vs_control_H3K27ac_R_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_BCG_vs_control_H3K4me1_DF[, 12] <- rownames(res_BCG_vs_control_H3K4me1_DF)
+BCG_vs_control_H3K4me1_HOMER   <- res_BCG_vs_control_H3K4me1_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(BCG_vs_control_H3K4me1_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+BCG_vs_control_H3K4me1_HOMER_input <- BCG_vs_control_H3K4me1_HOMER
+BCG_vs_control_H3K4me1_HOMER_input$Strand <- 0
+#BCG_vs_control_H3K4me1_HOMER_input$PeakID <- sub('^', 'Plus', BCG_vs_control_H3K4me1_HOMER_input$PeakID )
+#BCG_vs_control_H3K4me1_HOMER$Strand <- 1
+#BCG_vs_control_H3K4me1_HOMER$PeakID  <- sub('^', 'Minus', BCG_vs_control_H3K4me1_HOMER$PeakID )
+#BCG_vs_control_H3K4me1_HOMER_input <- rbind(BCG_vs_control_H3K4me1_HOMER_input, BCG_vs_control_H3K4me1_HOMER)
+write.table(BCG_vs_control_H3K4me1_HOMER_input, 	file='BCG_vs_control_H3K4me1_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+#res_BCG_vs_control_H3K4me3_R_DF[, 12] <- rownames(res_BCG_vs_control_H3K4me3_R_DF)
+#BCG_vs_control_H3K4me3_R_HOMER   <- res_BCG_vs_control_H3K4me3_R_DF[, c(12,1:3,5,6,8,7,9:11)]
+#colnames(BCG_vs_control_H3K4me3_R_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+#BCG_vs_control_H3K4me3_R_HOMER_input <- BCG_vs_control_H3K4me3_R_HOMER
+#BCG_vs_control_H3K4me3_R_HOMER_input$Strand <- 0
+#BCG_vs_control_H3K4me3_R_HOMER_input$PeakID <- sub('^', 'Plus', BCG_vs_control_H3K4me3_R_HOMER_input$PeakID )
+#BCG_vs_control_H3K4me3_R_HOMER$Strand <- 1
+#BCG_vs_control_H3K4me3_R_HOMER$PeakID  <- sub('^', 'Minus', BCG_vs_control_H3K4me3_R_HOMER$PeakID )
+#BCG_vs_control_H3K4me3_R_HOMER_input <- rbind(BCG_vs_control_H3K4me3_R_HOMER_input, BCG_vs_control_H3K4me3_R_HOMER)
+#write.table(BCG_vs_control_H3K4me3_R_HOMER_input, 	file='BCG_vs_control_H3K4me3_R_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_bovis_vs_M_tuberculosis_H3K27ac_DF[, 12] <- rownames(res_M_bovis_vs_M_tuberculosis_H3K27ac_DF)
+M_bovis_vs_M_tuberculosis_H3K27ac_HOMER   <- res_M_bovis_vs_M_tuberculosis_H3K27ac_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_bovis_vs_M_tuberculosis_H3K27ac_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_bovis_vs_M_tuberculosis_H3K27ac_HOMER_input <- M_bovis_vs_M_tuberculosis_H3K27ac_HOMER
+M_bovis_vs_M_tuberculosis_H3K27ac_HOMER_input$Strand <- 0
+#M_bovis_vs_M_tuberculosis_H3K27ac_HOMER_input$PeakID <- sub('^', 'Plus', M_bovis_vs_M_tuberculosis_H3K27ac_HOMER_input$PeakID )
+#M_bovis_vs_M_tuberculosis_H3K27ac_HOMER$Strand <- 1
+#M_bovis_vs_M_tuberculosis_H3K27ac_HOMER$PeakID  <- sub('^', 'Minus', M_bovis_vs_M_tuberculosis_H3K27ac_HOMER$PeakID )
+#M_bovis_vs_M_tuberculosis_H3K27ac_HOMER_input <- rbind(M_bovis_vs_M_tuberculosis_H3K27ac_HOMER_input, M_bovis_vs_M_tuberculosis_H3K27ac_HOMER)
+write.table(M_bovis_vs_M_tuberculosis_H3K27ac_HOMER_input, 	file='M_bovis_vs_M_tuberculosis_H3K27ac_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_bovis_vs_M_tuberculosis_H3K27me3_DF[, 12] <- rownames(res_M_bovis_vs_M_tuberculosis_H3K27me3_DF)
+M_bovis_vs_M_tuberculosis_H3K27me3_HOMER   <- res_M_bovis_vs_M_tuberculosis_H3K27me3_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_bovis_vs_M_tuberculosis_H3K27me3_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_bovis_vs_M_tuberculosis_H3K27me3_HOMER_input <- M_bovis_vs_M_tuberculosis_H3K27me3_HOMER
+M_bovis_vs_M_tuberculosis_H3K27me3_HOMER_input$Strand <- 0
+#M_bovis_vs_M_tuberculosis_H3K27me3_HOMER_input$PeakID <- sub('^', 'Plus', M_bovis_vs_M_tuberculosis_H3K27me3_HOMER_input$PeakID )
+#M_bovis_vs_M_tuberculosis_H3K27me3_HOMER$Strand <- 1
+#M_bovis_vs_M_tuberculosis_H3K27me3_HOMER$PeakID  <- sub('^', 'Minus', M_bovis_vs_M_tuberculosis_H3K27me3_HOMER$PeakID )
+#M_bovis_vs_M_tuberculosis_H3K27me3_HOMER_input <- rbind(M_bovis_vs_M_tuberculosis_H3K27me3_HOMER_input, M_bovis_vs_M_tuberculosis_H3K27me3_HOMER)
+write.table(M_bovis_vs_M_tuberculosis_H3K27me3_HOMER_input, 	file='M_bovis_vs_M_tuberculosis_H3K27me3_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_bovis_vs_M_tuberculosis_H3K4me1_DF[, 12] <- rownames(res_M_bovis_vs_M_tuberculosis_H3K4me1_DF)
+M_bovis_vs_M_tuberculosis_H3K4me1_HOMER   <- res_M_bovis_vs_M_tuberculosis_H3K4me1_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_bovis_vs_M_tuberculosis_H3K4me1_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_bovis_vs_M_tuberculosis_H3K4me1_HOMER_input <- M_bovis_vs_M_tuberculosis_H3K4me1_HOMER
+M_bovis_vs_M_tuberculosis_H3K4me1_HOMER_input$Strand <- 0
+#M_bovis_vs_M_tuberculosis_H3K4me1_HOMER_input$PeakID <- sub('^', 'Plus', M_bovis_vs_M_tuberculosis_H3K4me1_HOMER_input$PeakID )
+#M_bovis_vs_M_tuberculosis_H3K4me1_HOMER$Strand <- 1
+#M_bovis_vs_M_tuberculosis_H3K4me1_HOMER$PeakID  <- sub('^', 'Minus', M_bovis_vs_M_tuberculosis_H3K4me1_HOMER$PeakID )
+#M_bovis_vs_M_tuberculosis_H3K4me1_HOMER_input <- rbind(M_bovis_vs_M_tuberculosis_H3K4me1_HOMER_input, M_bovis_vs_M_tuberculosis_H3K4me1_HOMER)
+write.table(M_bovis_vs_M_tuberculosis_H3K4me1_HOMER_input, 	file='M_bovis_vs_M_tuberculosis_H3K4me1_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_bovis_vs_M_tuberculosis_H3K4me3_DF[, 12] <- rownames(res_M_bovis_vs_M_tuberculosis_H3K4me3_DF)
+M_bovis_vs_M_tuberculosis_H3K4me3_HOMER   <- res_M_bovis_vs_M_tuberculosis_H3K4me3_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_bovis_vs_M_tuberculosis_H3K4me3_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_bovis_vs_M_tuberculosis_H3K4me3_HOMER_input <- M_bovis_vs_M_tuberculosis_H3K4me3_HOMER
+M_bovis_vs_M_tuberculosis_H3K4me3_HOMER_input$Strand <- 0
+#M_bovis_vs_M_tuberculosis_H3K4me3_HOMER_input$PeakID <- sub('^', 'Plus', M_bovis_vs_M_tuberculosis_H3K4me3_HOMER_input$PeakID )
+#M_bovis_vs_M_tuberculosis_H3K4me3_HOMER$Strand <- 1
+#M_bovis_vs_M_tuberculosis_H3K4me3_HOMER$PeakID  <- sub('^', 'Minus', M_bovis_vs_M_tuberculosis_H3K4me3_HOMER$PeakID )
+#M_bovis_vs_M_tuberculosis_H3K4me3_HOMER_input <- rbind(M_bovis_vs_M_tuberculosis_H3K4me3_HOMER_input, M_bovis_vs_M_tuberculosis_H3K4me3_HOMER)
+write.table(M_bovis_vs_M_tuberculosis_H3K4me3_HOMER_input, 	file='M_bovis_vs_M_tuberculosis_H3K4me3_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_bovis_vs_Irradiated_H3K27ac_DF[, 12] <- rownames(res_M_bovis_vs_Irradiated_H3K27ac_DF)
+M_bovis_vs_Irradiated_H3K27ac_HOMER   <- res_M_bovis_vs_Irradiated_H3K27ac_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_bovis_vs_Irradiated_H3K27ac_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_bovis_vs_Irradiated_H3K27ac_HOMER_input <- M_bovis_vs_Irradiated_H3K27ac_HOMER
+M_bovis_vs_Irradiated_H3K27ac_HOMER_input$Strand <- 0
+#M_bovis_vs_Irradiated_H3K27ac_HOMER_input$PeakID <- sub('^', 'Plus', M_bovis_vs_Irradiated_H3K27ac_HOMER_input$PeakID )
+#M_bovis_vs_Irradiated_H3K27ac_HOMER$Strand <- 1
+#M_bovis_vs_Irradiated_H3K27ac_HOMER$PeakID  <- sub('^', 'Minus', M_bovis_vs_Irradiated_H3K27ac_HOMER$PeakID )
+#M_bovis_vs_Irradiated_H3K27ac_HOMER_input <- rbind(M_bovis_vs_Irradiated_H3K27ac_HOMER_input, M_bovis_vs_Irradiated_H3K27ac_HOMER)
+write.table(M_bovis_vs_Irradiated_H3K27ac_HOMER_input, 	file='M_bovis_vs_Irradiated_H3K27ac_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_bovis_vs_Irradiated_H3K4me1_DF[, 12] <- rownames(res_M_bovis_vs_Irradiated_H3K4me1_DF)
+M_bovis_vs_Irradiated_H3K4me1_HOMER   <- res_M_bovis_vs_Irradiated_H3K4me1_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_bovis_vs_Irradiated_H3K4me1_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_bovis_vs_Irradiated_H3K4me1_HOMER_input <- M_bovis_vs_Irradiated_H3K4me1_HOMER
+M_bovis_vs_Irradiated_H3K4me1_HOMER_input$Strand <- 0
+#M_bovis_vs_Irradiated_H3K4me1_HOMER_input$PeakID <- sub('^', 'Plus', M_bovis_vs_Irradiated_H3K4me1_HOMER_input$PeakID )
+#M_bovis_vs_Irradiated_H3K4me1_HOMER$Strand <- 1
+#M_bovis_vs_Irradiated_H3K4me1_HOMER$PeakID  <- sub('^', 'Minus', M_bovis_vs_Irradiated_H3K4me1_HOMER$PeakID )
+#M_bovis_vs_Irradiated_H3K4me1_HOMER_input <- rbind(M_bovis_vs_Irradiated_H3K4me1_HOMER_input, M_bovis_vs_Irradiated_H3K4me1_HOMER)
+write.table(M_bovis_vs_Irradiated_H3K4me1_HOMER_input, 	file='M_bovis_vs_Irradiated_H3K4me1_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_bovis_vs_Irradiated_H3K4me3_DF[, 12] <- rownames(res_M_bovis_vs_Irradiated_H3K4me3_DF)
+M_bovis_vs_Irradiated_H3K4me3_HOMER   <- res_M_bovis_vs_Irradiated_H3K4me3_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_bovis_vs_Irradiated_H3K4me3_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_bovis_vs_Irradiated_H3K4me3_HOMER_input <- M_bovis_vs_Irradiated_H3K4me3_HOMER
+M_bovis_vs_Irradiated_H3K4me3_HOMER_input$Strand <- 0
+#M_bovis_vs_Irradiated_H3K4me3_HOMER_input$PeakID <- sub('^', 'Plus', M_bovis_vs_Irradiated_H3K4me3_HOMER_input$PeakID )
+#M_bovis_vs_Irradiated_H3K4me3_HOMER$Strand <- 1
+#M_bovis_vs_Irradiated_H3K4me3_HOMER$PeakID  <- sub('^', 'Minus', M_bovis_vs_Irradiated_H3K4me3_HOMER$PeakID )
+#M_bovis_vs_Irradiated_H3K4me3_HOMER_input <- rbind(M_bovis_vs_Irradiated_H3K4me3_HOMER_input, M_bovis_vs_Irradiated_H3K4me3_HOMER)
+write.table(M_bovis_vs_Irradiated_H3K4me3_HOMER_input, 	file='M_bovis_vs_Irradiated_H3K4me3_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_bovis_vs_BCG_H3K27ac_DF[, 12] <- rownames(res_M_bovis_vs_BCG_H3K27ac_DF)
+M_bovis_vs_BCG_H3K27ac_HOMER   <- res_M_bovis_vs_BCG_H3K27ac_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_bovis_vs_BCG_H3K27ac_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_bovis_vs_BCG_H3K27ac_HOMER_input <- M_bovis_vs_BCG_H3K27ac_HOMER
+M_bovis_vs_BCG_H3K27ac_HOMER_input$Strand <- 0
+#M_bovis_vs_BCG_H3K27ac_HOMER_input$PeakID <- sub('^', 'Plus', M_bovis_vs_BCG_H3K27ac_HOMER_input$PeakID )
+#M_bovis_vs_BCG_H3K27ac_HOMER$Strand <- 1
+#M_bovis_vs_BCG_H3K27ac_HOMER$PeakID  <- sub('^', 'Minus', M_bovis_vs_BCG_H3K27ac_HOMER$PeakID )
+#M_bovis_vs_BCG_H3K27ac_HOMER_input <- rbind(M_bovis_vs_BCG_H3K27ac_HOMER_input, M_bovis_vs_BCG_H3K27ac_HOMER)
+write.table(M_bovis_vs_BCG_H3K27ac_HOMER_input, 	file='M_bovis_vs_BCG_H3K27ac_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+#res_M_bovis_vs_BCG_H3K27me3_DF[, 12] <- rownames(res_M_bovis_vs_BCG_H3K27me3_DF)
+#M_bovis_vs_BCG_H3K27me3_HOMER   <- res_M_bovis_vs_BCG_H3K27me3_DF[, c(12,1:3,5,6,8,7,9:11)]
+#colnames(M_bovis_vs_BCG_H3K27me3_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+#M_bovis_vs_BCG_H3K27me3_HOMER_input <- M_bovis_vs_BCG_H3K27me3_HOMER
+#M_bovis_vs_BCG_H3K27me3_HOMER_input$Strand <- 0
+#M_bovis_vs_BCG_H3K27me3_HOMER_input$PeakID <- sub('^', 'Plus', M_bovis_vs_BCG_H3K27me3_HOMER_input$PeakID )
+#M_bovis_vs_BCG_H3K27me3_HOMER$Strand <- 1
+#M_bovis_vs_BCG_H3K27me3_HOMER$PeakID  <- sub('^', 'Minus', M_bovis_vs_BCG_H3K27me3_HOMER$PeakID )
+#M_bovis_vs_BCG_H3K27me3_HOMER_input <- rbind(M_bovis_vs_BCG_H3K27me3_HOMER_input, M_bovis_vs_BCG_H3K27me3_HOMER)
+#write.table(M_bovis_vs_BCG_H3K27me3_HOMER_input, 	file='M_bovis_vs_BCG_H3K27me3_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_bovis_vs_BCG_H3K4me1_DF[, 12] <- rownames(res_M_bovis_vs_BCG_H3K4me1_DF)
+M_bovis_vs_BCG_H3K4me1_HOMER   <- res_M_bovis_vs_BCG_H3K4me1_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_bovis_vs_BCG_H3K4me1_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_bovis_vs_BCG_H3K4me1_HOMER_input <- M_bovis_vs_BCG_H3K4me1_HOMER
+M_bovis_vs_BCG_H3K4me1_HOMER_input$Strand <- 0
+#M_bovis_vs_BCG_H3K4me1_HOMER_input$PeakID <- sub('^', 'Plus', M_bovis_vs_BCG_H3K4me1_HOMER_input$PeakID )
+#M_bovis_vs_BCG_H3K4me1_HOMER$Strand <- 1
+#M_bovis_vs_BCG_H3K4me1_HOMER$PeakID  <- sub('^', 'Minus', M_bovis_vs_BCG_H3K4me1_HOMER$PeakID )
+#M_bovis_vs_BCG_H3K4me1_HOMER_input <- rbind(M_bovis_vs_BCG_H3K4me1_HOMER_input, M_bovis_vs_BCG_H3K4me1_HOMER)
+write.table(M_bovis_vs_BCG_H3K4me1_HOMER_input, 	file='M_bovis_vs_BCG_H3K4me1_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+#res_M_bovis_vs_BCG_H3K4me3_DF[, 12] <- rownames(res_M_bovis_vs_BCG_H3K4me3_DF)
+#M_bovis_vs_BCG_H3K4me3_HOMER   <- res_M_bovis_vs_BCG_H3K4me3_DF[, c(12,1:3,5,6,8,7,9:11)]
+#colnames(M_bovis_vs_BCG_H3K4me3_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+#M_bovis_vs_BCG_H3K4me3_HOMER_input <- M_bovis_vs_BCG_H3K4me3_HOMER
+#M_bovis_vs_BCG_H3K4me3_HOMER_input$Strand <- 0
+#M_bovis_vs_BCG_H3K4me3_HOMER_input$PeakID <- sub('^', 'Plus', M_bovis_vs_BCG_H3K4me3_HOMER_input$PeakID )
+#M_bovis_vs_BCG_H3K4me3_HOMER$Strand <- 1
+#M_bovis_vs_BCG_H3K4me3_HOMER$PeakID  <- sub('^', 'Minus', M_bovis_vs_BCG_H3K4me3_HOMER$PeakID )
+#M_bovis_vs_BCG_H3K4me3_HOMER_input <- rbind(M_bovis_vs_BCG_H3K4me3_HOMER_input, M_bovis_vs_BCG_H3K4me3_HOMER)
+#write.table(M_bovis_vs_BCG_H3K4me3_HOMER_input, 	file='M_bovis_vs_BCG_H3K4me3_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_tuberculosis_vs_BCG_H3K27ac_R_DF[, 12] <- rownames(res_M_tuberculosis_vs_BCG_H3K27ac_R_DF)
+M_tuberculosis_vs_BCG_H3K27ac_R_HOMER   <- res_M_tuberculosis_vs_BCG_H3K27ac_R_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_tuberculosis_vs_BCG_H3K27ac_R_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_tuberculosis_vs_BCG_H3K27ac_R_HOMER_input <- M_tuberculosis_vs_BCG_H3K27ac_R_HOMER
+M_tuberculosis_vs_BCG_H3K27ac_R_HOMER_input$Strand <- 0
+#M_tuberculosis_vs_BCG_H3K27ac_R_HOMER_input$PeakID <- sub('^', 'Plus', M_tuberculosis_vs_BCG_H3K27ac_R_HOMER_input$PeakID )
+#M_tuberculosis_vs_BCG_H3K27ac_R_HOMER$Strand <- 1
+#M_tuberculosis_vs_BCG_H3K27ac_R_HOMER$PeakID  <- sub('^', 'Minus', M_tuberculosis_vs_BCG_H3K27ac_R_HOMER$PeakID )
+#M_tuberculosis_vs_BCG_H3K27ac_R_HOMER_input <- rbind(M_tuberculosis_vs_BCG_H3K27ac_R_HOMER_input, M_tuberculosis_vs_BCG_H3K27ac_R_HOMER)
+write.table(M_tuberculosis_vs_BCG_H3K27ac_R_HOMER_input, 	file='M_tuberculosis_vs_BCG_H3K27ac_R_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_tuberculosis_vs_BCG_H3K27me3_R_DF[, 12] <- rownames(res_M_tuberculosis_vs_BCG_H3K27me3_R_DF)
+M_tuberculosis_vs_BCG_H3K27me3_R_HOMER   <- res_M_tuberculosis_vs_BCG_H3K27me3_R_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_tuberculosis_vs_BCG_H3K27me3_R_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_tuberculosis_vs_BCG_H3K27me3_R_HOMER_input <- M_tuberculosis_vs_BCG_H3K27me3_R_HOMER
+M_tuberculosis_vs_BCG_H3K27me3_R_HOMER_input$Strand <- 0
+#M_tuberculosis_vs_BCG_H3K27me3_R_HOMER_input$PeakID <- sub('^', 'Plus', M_tuberculosis_vs_BCG_H3K27me3_R_HOMER_input$PeakID )
+#M_tuberculosis_vs_BCG_H3K27me3_R_HOMER$Strand <- 1
+#M_tuberculosis_vs_BCG_H3K27me3_R_HOMER$PeakID  <- sub('^', 'Minus', M_tuberculosis_vs_BCG_H3K27me3_R_HOMER$PeakID )
+#M_tuberculosis_vs_BCG_H3K27me3_R_HOMER_input <- rbind(M_tuberculosis_vs_BCG_H3K27me3_R_HOMER_input, M_tuberculosis_vs_BCG_H3K27me3_R_HOMER)
+write.table(M_tuberculosis_vs_BCG_H3K27me3_R_HOMER_input, 	file='M_tuberculosis_vs_BCG_H3K27me3_R_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_tuberculosis_vs_BCG_H3K4me1_R_DF[, 12] <- rownames(res_M_tuberculosis_vs_BCG_H3K4me1_R_DF)
+M_tuberculosis_vs_BCG_H3K4me1_R_HOMER   <- res_M_tuberculosis_vs_BCG_H3K4me1_R_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_tuberculosis_vs_BCG_H3K4me1_R_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_tuberculosis_vs_BCG_H3K4me1_R_HOMER_input <- M_tuberculosis_vs_BCG_H3K4me1_R_HOMER
+M_tuberculosis_vs_BCG_H3K4me1_R_HOMER_input$Strand <- 0
+#M_tuberculosis_vs_BCG_H3K4me1_R_HOMER_input$PeakID <- sub('^', 'Plus', M_tuberculosis_vs_BCG_H3K4me1_R_HOMER_input$PeakID )
+#M_tuberculosis_vs_BCG_H3K4me1_R_HOMER$Strand <- 1
+#M_tuberculosis_vs_BCG_H3K4me1_R_HOMER$PeakID  <- sub('^', 'Minus', M_tuberculosis_vs_BCG_H3K4me1_R_HOMER$PeakID )
+#M_tuberculosis_vs_BCG_H3K4me1_R_HOMER_input <- rbind(M_tuberculosis_vs_BCG_H3K4me1_R_HOMER_input, M_tuberculosis_vs_BCG_H3K4me1_R_HOMER)
+write.table(M_tuberculosis_vs_BCG_H3K4me1_R_HOMER_input, 	file='M_tuberculosis_vs_BCG_H3K4me1_R_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_M_tuberculosis_vs_BCG_H3K4me3_R_DF[, 12] <- rownames(res_M_tuberculosis_vs_BCG_H3K4me3_R_DF)
+M_tuberculosis_vs_BCG_H3K4me3_R_HOMER   <- res_M_tuberculosis_vs_BCG_H3K4me3_R_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_tuberculosis_vs_BCG_H3K4me3_R_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_tuberculosis_vs_BCG_H3K4me3_R_HOMER_input <- M_tuberculosis_vs_BCG_H3K4me3_R_HOMER
+M_tuberculosis_vs_BCG_H3K4me3_R_HOMER_input$Strand <- 0
+#M_tuberculosis_vs_BCG_H3K4me3_R_HOMER_input$PeakID <- sub('^', 'Plus', M_tuberculosis_vs_BCG_H3K4me3_R_HOMER_input$PeakID )
+#M_tuberculosis_vs_BCG_H3K4me3_R_HOMER$Strand <- 1
+#M_tuberculosis_vs_BCG_H3K4me3_R_HOMER$PeakID  <- sub('^', 'Minus', M_tuberculosis_vs_BCG_H3K4me3_R_HOMER$PeakID )
+#M_tuberculosis_vs_BCG_H3K4me3_R_HOMER_input <- rbind(M_tuberculosis_vs_BCG_H3K4me3_R_HOMER_input, M_tuberculosis_vs_BCG_H3K4me3_R_HOMER)
+write.table(M_tuberculosis_vs_BCG_H3K4me3_R_HOMER_input, 	file='M_tuberculosis_vs_BCG_H3K4me3_R_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_Irradiated_vs_BCG_H3K27ac_DF[, 12] <- rownames(res_Irradiated_vs_BCG_H3K27ac_DF)
+Irradiated_vs_BCG_H3K27ac_HOMER   <- res_Irradiated_vs_BCG_H3K27ac_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(Irradiated_vs_BCG_H3K27ac_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+Irradiated_vs_BCG_H3K27ac_HOMER_input <- Irradiated_vs_BCG_H3K27ac_HOMER
+Irradiated_vs_BCG_H3K27ac_HOMER_input$Strand <- 0
+#Irradiated_vs_BCG_H3K27ac_HOMER_input$PeakID <- sub('^', 'Plus', Irradiated_vs_BCG_H3K27ac_HOMER_input$PeakID )
+#Irradiated_vs_BCG_H3K27ac_HOMER$Strand <- 1
+#Irradiated_vs_BCG_H3K27ac_HOMER$PeakID  <- sub('^', 'Minus', Irradiated_vs_BCG_H3K27ac_HOMER$PeakID )
+#Irradiated_vs_BCG_H3K27ac_HOMER_input <- rbind(Irradiated_vs_BCG_H3K27ac_HOMER_input, Irradiated_vs_BCG_H3K27ac_HOMER)
+write.table(Irradiated_vs_BCG_H3K27ac_HOMER_input, 	file='Irradiated_vs_BCG_H3K27ac_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_Irradiated_vs_BCG_H3K27me3_DF[, 12] <- rownames(res_Irradiated_vs_BCG_H3K27me3_DF)
+Irradiated_vs_BCG_H3K27me3_HOMER   <- res_Irradiated_vs_BCG_H3K27me3_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(Irradiated_vs_BCG_H3K27me3_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+Irradiated_vs_BCG_H3K27me3_HOMER_input <- Irradiated_vs_BCG_H3K27me3_HOMER
+Irradiated_vs_BCG_H3K27me3_HOMER_input$Strand <- 0
+#Irradiated_vs_BCG_H3K27me3_HOMER_input$PeakID <- sub('^', 'Plus', Irradiated_vs_BCG_H3K27me3_HOMER_input$PeakID )
+#Irradiated_vs_BCG_H3K27me3_HOMER$Strand <- 1
+#Irradiated_vs_BCG_H3K27me3_HOMER$PeakID  <- sub('^', 'Minus', Irradiated_vs_BCG_H3K27me3_HOMER$PeakID )
+#Irradiated_vs_BCG_H3K27me3_HOMER_input <- rbind(Irradiated_vs_BCG_H3K27me3_HOMER_input, Irradiated_vs_BCG_H3K27me3_HOMER)
+write.table(Irradiated_vs_BCG_H3K27me3_HOMER_input, 	file='Irradiated_vs_BCG_H3K27me3_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_Irradiated_vs_BCG_H3K4me1_DF[, 12] <- rownames(res_Irradiated_vs_BCG_H3K4me1_DF)
+Irradiated_vs_BCG_H3K4me1_HOMER   <- res_Irradiated_vs_BCG_H3K4me1_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(Irradiated_vs_BCG_H3K4me1_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+Irradiated_vs_BCG_H3K4me1_HOMER_input <- Irradiated_vs_BCG_H3K4me1_HOMER
+Irradiated_vs_BCG_H3K4me1_HOMER_input$Strand <- 0
+#Irradiated_vs_BCG_H3K4me1_HOMER_input$PeakID <- sub('^', 'Plus', Irradiated_vs_BCG_H3K4me1_HOMER_input$PeakID )
+#Irradiated_vs_BCG_H3K4me1_HOMER$Strand <- 1
+#Irradiated_vs_BCG_H3K4me1_HOMER$PeakID  <- sub('^', 'Minus', Irradiated_vs_BCG_H3K4me1_HOMER$PeakID )
+#Irradiated_vs_BCG_H3K4me1_HOMER_input <- rbind(Irradiated_vs_BCG_H3K4me1_HOMER_input, Irradiated_vs_BCG_H3K4me1_HOMER)
+write.table(Irradiated_vs_BCG_H3K4me1_HOMER_input, 	file='Irradiated_vs_BCG_H3K4me1_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+#res_Irradiated_vs_BCG_H3K4me3_DF[, 12] <- rownames(res_Irradiated_vs_BCG_H3K4me3_DF)
+#Irradiated_vs_BCG_H3K4me3_HOMER   <- res_Irradiated_vs_BCG_H3K4me3_DF[, c(12,1:3,5,6,8,7,9:11)]
+#colnames(Irradiated_vs_BCG_H3K4me3_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+#Irradiated_vs_BCG_H3K4me3_HOMER_input <- Irradiated_vs_BCG_H3K4me3_HOMER
+#Irradiated_vs_BCG_H3K4me3_HOMER_input$Strand <- 0
+#Irradiated_vs_BCG_H3K4me3_HOMER_input$PeakID <- sub('^', 'Plus', Irradiated_vs_BCG_H3K4me3_HOMER_input$PeakID )
+#Irradiated_vs_BCG_H3K4me3_HOMER$Strand <- 1
+#Irradiated_vs_BCG_H3K4me3_HOMER$PeakID  <- sub('^', 'Minus', Irradiated_vs_BCG_H3K4me3_HOMER$PeakID )
+#Irradiated_vs_BCG_H3K4me3_HOMER_input <- rbind(Irradiated_vs_BCG_H3K4me3_HOMER_input, Irradiated_vs_BCG_H3K4me3_HOMER)
+#write.table(Irradiated_vs_BCG_H3K4me3_HOMER_input, 	file='Irradiated_vs_BCG_H3K4me3_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_Irradiated_vs_M_tuberculosis_H3K27ac_DF[, 12] <- rownames(res_Irradiated_vs_M_tuberculosis_H3K27ac_DF)
+Irradiated_vs_M_tuberculosis_H3K27ac_HOMER   <- res_Irradiated_vs_M_tuberculosis_H3K27ac_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(Irradiated_vs_M_tuberculosis_H3K27ac_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+Irradiated_vs_M_tuberculosis_H3K27ac_HOMER_input <- Irradiated_vs_M_tuberculosis_H3K27ac_HOMER
+Irradiated_vs_M_tuberculosis_H3K27ac_HOMER_input$Strand <- 0
+#Irradiated_vs_M_tuberculosis_H3K27ac_HOMER_input$PeakID <- sub('^', 'Plus', Irradiated_vs_M_tuberculosis_H3K27ac_HOMER_input$PeakID )
+#Irradiated_vs_M_tuberculosis_H3K27ac_HOMER$Strand <- 1
+#Irradiated_vs_M_tuberculosis_H3K27ac_HOMER$PeakID  <- sub('^', 'Minus', Irradiated_vs_M_tuberculosis_H3K27ac_HOMER$PeakID )
+#Irradiated_vs_M_tuberculosis_H3K27ac_HOMER_input <- rbind(Irradiated_vs_M_tuberculosis_H3K27ac_HOMER_input, Irradiated_vs_M_tuberculosis_H3K27ac_HOMER)
+write.table(Irradiated_vs_M_tuberculosis_H3K27ac_HOMER_input, 	file='Irradiated_vs_M_tuberculosis_H3K27ac_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+#res_Irradiated_vs_M_tuberculosis_H3K27me3_DF[, 12] <- rownames(res_Irradiated_vs_M_tuberculosis_H3K27me3_DF)
+#Irradiated_vs_M_tuberculosis_H3K27me3_HOMER   <- res_Irradiated_vs_M_tuberculosis_H3K27me3_DF[, c(12,1:3,5,6,8,7,9:11)]
+#colnames(Irradiated_vs_M_tuberculosis_H3K27me3_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+#Irradiated_vs_M_tuberculosis_H3K27me3_HOMER_input <- Irradiated_vs_M_tuberculosis_H3K27me3_HOMER
+#Irradiated_vs_M_tuberculosis_H3K27me3_HOMER_input$Strand <- 0
+#Irradiated_vs_M_tuberculosis_H3K27me3_HOMER_input$PeakID <- sub('^', 'Plus', Irradiated_vs_M_tuberculosis_H3K27me3_HOMER_input$PeakID )
+#Irradiated_vs_M_tuberculosis_H3K27me3_HOMER$Strand <- 1
+#Irradiated_vs_M_tuberculosis_H3K27me3_HOMER$PeakID  <- sub('^', 'Minus', Irradiated_vs_M_tuberculosis_H3K27me3_HOMER$PeakID )
+#Irradiated_vs_M_tuberculosis_H3K27me3_HOMER_input <- rbind(Irradiated_vs_M_tuberculosis_H3K27me3_HOMER_input, Irradiated_vs_M_tuberculosis_H3K27me3_HOMER)
+#write.table(Irradiated_vs_M_tuberculosis_H3K27me3_HOMER_input, 	file='Irradiated_vs_M_tuberculosis_H3K27me3_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+res_Irradiated_vs_M_tuberculosis_H3K4me1_DF[, 12] <- rownames(res_Irradiated_vs_M_tuberculosis_H3K4me1_DF)
+Irradiated_vs_M_tuberculosis_H3K4me1_HOMER   <- res_Irradiated_vs_M_tuberculosis_H3K4me1_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(Irradiated_vs_M_tuberculosis_H3K4me1_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+Irradiated_vs_M_tuberculosis_H3K4me1_HOMER_input <- Irradiated_vs_M_tuberculosis_H3K4me1_HOMER
+Irradiated_vs_M_tuberculosis_H3K4me1_HOMER_input$Strand <- 0
+#Irradiated_vs_M_tuberculosis_H3K4me1_HOMER_input$PeakID <- sub('^', 'Plus', Irradiated_vs_M_tuberculosis_H3K4me1_HOMER_input$PeakID )
+#Irradiated_vs_M_tuberculosis_H3K4me1_HOMER$Strand <- 1
+#Irradiated_vs_M_tuberculosis_H3K4me1_HOMER$PeakID  <- sub('^', 'Minus', Irradiated_vs_M_tuberculosis_H3K4me1_HOMER$PeakID )
+#Irradiated_vs_M_tuberculosis_H3K4me1_HOMER_input <- rbind(Irradiated_vs_M_tuberculosis_H3K4me1_HOMER_input, Irradiated_vs_M_tuberculosis_H3K4me1_HOMER)
+write.table(Irradiated_vs_M_tuberculosis_H3K4me1_HOMER_input, 	file='Irradiated_vs_M_tuberculosis_H3K4me1_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+#For this data, I took the DAB summary, fixed it into this format (code pending) and fliiped the fold change (Diffbind puts it at minus because affinty binding is less in control, which is really confusing)
+#Syntax is as follows:
+annotatePeaks.pl <peak/BED file> <genome>   > <output file>
+
+#Annotate peaks on test set
+#REMEMBER: Your chromosome MUST BE IN THE SAME FORMAT AS THE GTF!!!! So chromosome 1 in your input should be NC_037329.1, not 1 or chr1
+annotatePeaks.pl Irradiated_vs_M_tuberculosis_H3K4me1_HOMER_input.csv GCF_002263795.1_ARS-UCD1.2_genomic.fasta -gtf GCF_002263795.1_ARS-UCD1.2_genomic.gtf > Irradiated_vs_M_tuberculosis_H3K4me1_HOMER_annotated.csv
+
+#Annotate peaks on all datasets
+#NOTE PAY ATTENTION TO ME<<<<<<<<<<<<<<<<<<<<<< if you use the gff, and not the gtf, you will not get gene ids in your output. DO NOT USE GFF
+for i in *_HOMER_input.txt; do
+annotatePeaks.pl $i GCF_002263795.1_ARS-UCD1.2_genomic.fasta -gtf GCF_002263795.1_ARS-UCD1.2_genomic.gtf > ${i%_HOMER_input.txt}_HOMER_annotated.csv
+done 
+
+
+#Given the amount of datasets I have, I think its wise to code this format:
+res_M_bovis_vs_control_H3K27ac_DF[, 12] <- rownames(res_M_bovis_vs_control_H3K27ac_DF)
+M_bovis_vs_control_H3K27ac_HOMER   <- res_M_bovis_vs_control_H3K27ac_DF[, c(12,1:3,5,6,8,7,9:11)]
+colnames(M_bovis_vs_control_H3K27ac_HOMER)<-c('PeakID','Chr','Start','End', 'Strand',	'Mean concentration of reads', 'Concentration of Control reads', 'Concentration of M.bovis reads', 'Fold change', 'P value', 'FDR adjusted P value')
+M_bovis_vs_control_H3K27ac_HOMER_input <- M_bovis_vs_control_H3K27ac_HOMER
+M_bovis_vs_control_H3K27ac_HOMER_input$Strand <- 0
+M_bovis_vs_control_H3K27ac_HOMER_input$PeakID <- sub('^', 'Plus', M_bovis_vs_control_H3K27ac_HOMER_input$PeakID )
+M_bovis_vs_control_H3K27ac_HOMER$Strand <- 1
+M_bovis_vs_control_H3K27ac_HOMER$PeakID  <- sub('^', 'Minus', M_bovis_vs_control_H3K27ac_HOMER$PeakID )
+M_bovis_vs_control_H3K27ac_HOMER_input <- rbind(M_bovis_vs_control_H3K27ac_HOMER_input, M_bovis_vs_control_H3K27ac_HOMER)
+write.table(M_bovis_vs_control_H3K27ac_HOMER_input, 	file='M_bovis_vs_control_H3K27ac_HOMER_input.txt', sep = '\t', quote=F, row.names=F)
+
+./updateUCSCGenomeAnnotations.pl cow.txt
+./updatePromoters.pl cow.txt
+loadGenome.pl -name Cow -org bosTau9 -fasta GCF_002263795.1_ARS-UCD1.2_genomic.fasta -gtf GCF_002263795.1_ARS-UCD1.2_genomic.gtf
+annotatePeaks.pl Irradiated_vs_control_H3K4me3_R_HOMER_input.txt GCF_002263795.1_ARS-UCD1.2_genomic.fasta -gtf GCF_002263795.1_ARS-UCD1.2_genomic.gtf > Irradiated_vs_control_H3K4me3_R_HOMER_annotated.csv
+bosTau9
+annotatePeaks.pl Irradiated_vs_control_H3K4me3_R_HOMER_input.txt bosTau9 > Irradiated_vs_control_H3K4me3_R_HOMER_annotated.csv
+annotatePeaks.pl Irradiated_vs_control_H3K4me3_R_HOMER_input.txt hg38 > Irradiated_vs_control_H3K4me3_R_HOMER_annotated.csv
+
+
+####################Plotting and reporting#####################
+#plot a pca
+#To see how well the samples cluster with one another, we can draw a PCA plot using all 85 consensus sites. 
+#You should see both Nanog and Pou5f1 replicates clustering together.
+dba.plotPCA(ChIP_diffbind_count,  attributes=DBA_TREATMENT, label=DBA_ID)
+dba.plotPCA(ChIP_diffbind_contrast,  attributes=DBA_FACTOR, label=DBA_ID)
+dba.plotPCA(ChIP_diffbind_contrast, DBA_TREATMENT, minMembers = 2, contrast = 3)
+dba.plotPCA(ChIP_diffbind_contrast, DBA_TREATMENT, minMembers = 2, contrast = 6)
+dba.plotPCA(ChIP_diffbind_contrast, DBA_TREATMENT, minMembers = 2, contrast = 8)
+dba.plotPCA(ChIP_diffbind_contrast, DBA_TREATMENT, minMembers = 2, contrast = 10)
+
+#A correlation heatmap can be plotted, based on the result of the analysis
+plot(ChIP_diffbind_contrast, main = 'M.bovis vs Control', contrast=29) 
+
+
+#plot ATAC_diffbind_object as a correlation heatmap. Gives an initial clustering of the samples using the cross-correlations of each row of the binding matrix
+plot(ChIP_diffbind_object)
+plot(ChIP_diffbind_count)
+plot(ChIP_diffbind_contrast)
+
+#plot an MA
+dba.plotMA(ChIP_diffbind_contrast, contrast=29, bFlip = TRUE) 
+
+
+#Similar to MA plots, Volcano plots also highlight significantly differentially bound sites and
+#show their fold changes. Here, however, the confidence statistic (FDR or p-value) is shown on a negative log scale.
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=29, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=52, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=90, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=94, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=43, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=143, bFlip = TRUE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=161, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=299, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=179, bFlip = TRUE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=133, bFlip = FALSE)#IM HERE 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=151, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=234, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=169, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=138, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=156, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=279, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=174, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=43, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=66, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=88, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=109, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=33, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=56, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=78, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=99, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=14, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=38, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=83, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=21, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=104, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=250, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=260, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=269, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=277, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=284, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=185, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=200, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=214, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=227, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=239, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=190, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=205, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=232, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=219, bFlip = FALSE) 
+dba.plotVolcano(ChIP_diffbind_contrast, contrast=244, bFlip = FALSE) 
+
+Vol_M_bovis_vs_control_H3K27ac <- as.data.frame(Vol_M_bovis_vs_control_H3K27ac)
+Vol_M_bovis_vs_control_H3K27me3 <-as.data.frame(Vol_M_bovis_vs_control_H3K27me3)
+Vol_M_bovis_vs_control_H3K4me1 <- as.data.frame(Vol_M_bovis_vs_control_H3K4me1)
+Vol_M_bovis_vs_control_H3K4me3 <- as.data.frame(Vol_M_bovis_vs_control_H3K4me3)
+Vol_M_tuberculosis_vs_control_H3K27ac_R) <- as.data.frame(Vol_M_tuberculosis_vs_control_H3K27ac_R)
+Vol_M_tuberculosis_vs_control_H3K27me3 <-  as.data.frame(Vol_M_tuberculosis_vs_control_H3K27me3)
+Vol_M_tuberculosis_vs_control_H3K4me1 <-   as.data.frame(Vol_M_tuberculosis_vs_control_H3K4me1)
+Vol_M_tuberculosis_vs_control_H3K4me3_R <- as.data.frame(Vol_M_tuberculosis_vs_control_H3K4me3_R)
+Vol_Irradiated_vs_control_H3K27ac_R <- as.data.frame(Vol_Irradiated_vs_control_H3K27ac_R)
+Vol_Irradiated_vs_control_H3K27me3_R <-as.data.frame(Vol_Irradiated_vs_control_H3K27me3_R)
+Vol_Irradiated_vs_control_H3K4me1 <- as.data.frame(Vol_Irradiated_vs_control_H3K4me1)
+Vol_Irradiated_vs_control_H3K4me3_R <- as.data.frame(Vol_Irradiated_vs_control_H3K4me3_R)
+Vol_BCG_vs_control_H3K27ac_R <- as.data.frame(Vol_BCG_vs_control_H3K27ac_R)
+Vol_BCG_vs_control_H3K27me3 <-  as.data.frame(Vol_BCG_vs_control_H3K27me3)
+Vol_BCG_vs_control_H3K4me1 <-   as.data.frame(Vol_BCG_vs_control_H3K4me1)
+Vol_BCG_vs_control_H3K4me3_R <- as.data.frame(Vol_BCG_vs_control_H3K4me3_R)
+Vol_M_bovis_vs_M_tuberculosis_H3K27ac <- as.data.frame(Vol_M_bovis_vs_M_tuberculosis_H3K27ac)
+Vol_M_bovis_vs_M_tuberculosis_H3K27me3 <- as.data.frame(Vol_M_bovis_vs_M_tuberculosis_H3K27me3)
+Vol_M_bovis_vs_M_tuberculosis_H3K4me1 <- as.data.frame(Vol_M_bovis_vs_M_tuberculosis_H3K4me1)
+Vol_M_bovis_vs_M_tuberculosis_H3K4me3 <- as.data.frame(Vol_M_bovis_vs_M_tuberculosis_H3K4me3)
+Vol_M_bovis_vs_Irradiated_H3K27ac <- as.data.frame(Vol_M_bovis_vs_Irradiated_H3K27ac)
+Vol_M_bovis_vs_Irradiated_H3K27me3 <- as.data.frame(Vol_M_bovis_vs_Irradiated_H3K27me3)
+Vol_M_bovis_vs_Irradiated_H3K4me1 <- as.data.frame(Vol_M_bovis_vs_Irradiated_H3K4me1)
+Vol_M_bovis_vs_Irradiated_H3K4me3 <- as.data.frame(Vol_M_bovis_vs_Irradiated_H3K4me3)
+Vol_M_bovis_vs_BCG_CTCF <- as.data.frame(Vol_M_bovis_vs_BCG_CTCF)
+Vol_M_bovis_vs_BCG_H3K27ac <- as.data.frame(Vol_M_bovis_vs_BCG_H3K27ac)
+Vol_M_bovis_vs_BCG_H3K27me3 <- as.data.frame(Vol_M_bovis_vs_BCG_H3K27me3)
+Vol_M_bovis_vs_BCG_H3K4me1 <- as.data.frame(Vol_M_bovis_vs_BCG_H3K4me1)
+Vol_M_bovis_vs_BCG_H3K4me3 <- as.data.frame(Vol_M_bovis_vs_BCG_H3K4me3)
+Vol_M_tuberculosis_vs_BCG_CTCF <- as.data.frame(Vol_M_tuberculosis_vs_BCG_CTCF)
+Vol_M_tuberculosis_vs_BCG_H3K27ac_R <- as.data.frame(Vol_M_tuberculosis_vs_BCG_H3K27ac_R)
+Vol_M_tuberculosis_vs_BCG_H3K27me3_R <- as.data.frame(Vol_M_tuberculosis_vs_BCG_H3K27me3_R)
+Vol_M_tuberculosis_vs_BCG_H3K4me1_R <- as.data.frame(Vol_M_tuberculosis_vs_BCG_H3K4me1_R)
+Vol_M_tuberculosis_vs_BCG_H3K4me3_R <- as.data.frame(Vol_M_tuberculosis_vs_BCG_H3K4me3_R)
+Vol_Irradiated_vs_BCG_CTCF <- as.data.frame(Vol_Irradiated_vs_BCG_CTCF)
+Vol_Irradiated_vs_BCG_H3K27ac <- as.data.frame(Vol_Irradiated_vs_BCG_H3K27ac)
+Vol_Irradiated_vs_BCG_H3K27me3 <- as.data.frame(Vol_Irradiated_vs_BCG_H3K27me3)
+Vol_Irradiated_vs_BCG_H3K4me1 <- as.data.frame(Vol_Irradiated_vs_BCG_H3K4me1)
+Vol_Irradiated_vs_BCG_H3K4me3 <- as.data.frame(Vol_Irradiated_vs_BCG_H3K4me3)
+Vol_Irradiated_vs_M_tuberculosis_CTCF <- as.data.frame(Vol_Irradiated_vs_M_tuberculosis_CTCF)
+Vol_Irradiated_vs_M_tuberculosis_H3K27ac <- as.data.frame(Vol_Irradiated_vs_M_tuberculosis_H3K27ac)
+Vol_Irradiated_vs_M_tuberculosis_H3K27me3 <- as.data.frame(Vol_Irradiated_vs_M_tuberculosis_H3K27me3)
+Vol_Irradiated_vs_M_tuberculosis_H3K4me1 <- as.data.frame(Vol_Irradiated_vs_M_tuberculosis_H3K4me1)
+Vol_Irradiated_vs_M_tuberculosis_H3K4me3 <- as.data.frame(Vol_Irradiated_vs_M_tuberculosis_H3K4me3)
+
+#how are reads distributed amongst the different classes of differentially bound sites and
+#sample groups? These data can be more clearly seen using a boxplot
+pvals <- dba.plotBox(ChIP_diffbind_contrast)
+corvals <- dba.plotHeatmap(ChIP_diffbind_contrast, contrast=1, correlations=FALSE)
+
+#identifying sites unique to a sample group
+dba.plotVenn(ChIP_diffbind_contrast, contrast=29, bDB=TRUE, + bGain=TRUE, bLoss=TRUE, bAll=FALSE)
+
+#Profiled heatmap
+profiles <- dba.plotProfile(ChIP_diffbind_contrast, contrast=3)
+dba.plotProfile(profiles)
+
+#merged
+profiles <- dba.plotProfile(ChIP_diffbind_contrast, merge=DBA_TREATMENT) #find out what X is
+dba.plotProfile(profiles)
+
+#Unmerged sample
+mask.Mbovis <- ChIP_diffbind_contrast$masks$M_bovis
+mask.Control <- ChIP_diffbind_contrast$masks$Control
+profiles <- dba.plotProfile(ChIP_diffbind_contrast, samples=list(mask.Mbovis, mask.Control), merge=NULL)
+dba.plotProfile(profiles)
+
+#Summary bar chart 
+ggplot(DAB_Summary, aes(x = Contrast, y = DB.DESeq2)) +
+  labs(x = 'Experimental challenge contrast',
+       y = 'Number of differential affinity binding sites',
+       title = 'Differential affinity binding sites between challenges') +
+  geom_col(fill = '#80ccff') +
+  theme_bw() +
+  theme(panel.grid.major.y = element_blank(),
+          legend.position = 'off')
