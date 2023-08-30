@@ -1,0 +1,1010 @@
+#######################################################################################
+##############################   RNA-seq pipeline  ####################################
+#######################################################################################
+
+#First, download the data
+sftp john_a_browne_ucd_ie@gweusftp.brooks.com
+
+#Then some MD5 and fastqc
+
+#Based on QC, I want to do some general trimming
+for i in *_R1_001.fastq.gz; do
+/home/workspace/thall/Misc/fastp -i $i -I ${i%_R1_001.fastq.gz}_R2_001.fastq.gz -o ${i%_R1_001.fastq.gz}_R1_001_trimmed.fastq.gz -O ${i%_R1_001.fastq.gz}_R2_001_trimmed.fastq.gz -R ${i%_R1_001.fastq.gz}_report
+done;
+
+#Now for alignment with STAR
+#Index if needed
+STAR --runThreadN 30 --runMode genomeGenerate \
+--genomeDir /home/workspace/genomes/bostaurus/ARS_UCD1.2_NCBI/STAR-2.7.10a_index  \
+--genomeFastaFiles /home/workspace/genomes/bostaurus/ARS_UCD1.2_NCBI/source_file/GCF_002263795.1_ARS-UCD1.2_genomic.fna \
+--sjdbGTFfile /home/workspace/genomes/bostaurus/ARS_UCD1.2_NCBI/annotation_file/GCF_002263795.1_ARS-UCD1.2_genomic.gff \
+--sjdbGTFtagExonParentTranscript Parent --sjdbOverhang 99 \
+--outFileNamePrefix /home/workspace/genomes/bostaurus/ARS_UCD1.2_NCBI/STAR-2.7.10_index_124  &
+
+#Now align. Using 'screen' is a good idea. 
+#type 'screen', press space, run command and then press CTRL + A + D to detach. Type 'screen -r' to return'
+#Note, the directories will probably have changed. 
+for i in *_R1_001_trimmed.fastq.gz; do
+STAR-2.7.1a --runMode alignReads  --outSAMtype BAM Unsorted --outReadsUnmapped Fastx --runThreadN 40 --readFilesCommand zcat --genomeDir /home/workspace/genomes/bostaurus/ARS_UCD1.2_NCBI/STAR-2.7.3a_index  --readFilesIn /home/workspace/thall/Analysis/UCD_EDIN_macrophage_project/RNA-seq/Raw_data/Trimmed/$i /home/workspace/thall/Analysis/UCD_EDIN_macrophage_project/RNA-seq/Raw_data/Trimmed/${i%_R1_001_trimmed.fastq.gz}_R2_001_trimmed.fastq.gz --outFileNamePrefix /home/workspace/thall/Analysis/UCD_EDIN_macrophage_project/RNA-seq/Alignment/${i%_R1_001_trimmed.fastq.gz}
+done 
+
+#cat the logs 
+for i in *final*; do 
+echo Filename : '$i';echo;cat '$i'; done > All_logs.txt
+
+#Running feature counts to count gene reads from within Bam directory
+for i in *.bam; do
+featureCounts -a /home/workspace/genomes/bostaurus/ARS_UCD1.2_NCBI/annotation_file/GCF_002263795.1_ARS-UCD1.2_genomic.gff -o ${i%.bam}counts.csv ./$i -B -p -O -M -C -s 0 -T 25 -t gene -g Dbxref;
+done
+
+#remove top line 
+sed -i ' 1d' *.csv
+
+#Now move over into R
+
+#make gene list
+AS01Aligned.outcounts <- read.delim('AS01Aligned.outcounts.csv')
+genelist = AS01Aligned.outcounts[, 1]
+rm(AS01Aligned.outcounts)
+
+
+#Read in all files 
+temp = list.files(pattern='*.csv')
+for (i in temp){
+    Genes = read.delim(i) #read file from current directory
+    Genes = as.data.frame(subset(Genes, select = 7))
+	genelist = cbind(genelist, Genes)
+	Genes = NULL
+}
+
+test = genelist 
+library(stringr)
+
+test$genelist %<>%
+    str_replace(',VGNC:.*', '') %>%
+    str_replace('BGD.*,', '') %>%
+    str_replace(',miRBase:.*', '') %>% 
+    str_replace('GeneID:', '')
+	
+colnames(test) %<>%
+#    str_replace('X.home.workspace.thall.Analysis.Tad_data.Alignment.takara.bam.', '') %>% 
+	str_replace('Aligned.out.bam', '')
+
+	
+write.csv(test, file = 'UCD_EDIN_RNA-seq_Raw_counts.csv', row.names = FALSE)
+
+##########################           DESeq2            #################################
+########## Construct DESeqDataSet ###########
+library(DESeq2)
+count_data <- read.csv('UCD_EDIN_RNA-seq_Raw_counts_sorted_updated.csv')
+rownames(count_data) <- count_data[, 1]
+count_data[, 1] <- NULL
+design_formula <- read.csv('Design_matrix_updated.csv')
+
+dds <- DESeqDataSetFromMatrix(countData = count_data, 
+                              colData = design_formula,
+                              design = ~ type) #i realised that condition and type are linear combinations of the same thing i.e Control is always untreated. This wont work. 
+							  
+#dds$group <- factor(paste0(dds$timepoint, dds$type)) #better to combine the factors, as untreated is compounded in Control
+#design(dds) <- ~ group
+dds <- DESeq(dds)
+resultsNames(dds)
+res <- results(dds, alpha=0.05)
+res
+summary(res)
+
+#counts
+normalized.counts <- as.data.frame(counts( dds, normalized=TRUE))
+write.csv(normalized.counts, file='UCD_EDIN_RNA-seq_normalized_counts_ARD.csv')
+
+#data transformation
+rld <- rlog(dds, blind=FALSE)
+vsd <- vst(dds, blind=FALSE)
+
+M_bovis_vs_Control_rld <- rld[ , rld$type %in% c('M..bovis','Control') ]
+M_bovis_vs_BCG_rld <- rld[ , rld$type %in% c('M..bovis','BCG') ]
+M_bovis_vs_Irradiated_rld <- rld[ , rld$type %in% c('M..bovis','Irradiated') ]
+M_bovis_vs_M_tuberculosis_rld <- rld[ , rld$type %in% c('M..bovis','M..tuberculosis') ]
+M_tuberculosis_vs_Control_rld <- rld[ , rld$type %in% c('M..tuberculosis','Control') ]
+M_tuberculosis_vs_BCG_rld <- rld[ , rld$type %in% c('M..tuberculosis','BCG') ]
+M_tuberculosis_vs_Irradiated_rld <- rld[ , rld$type %in% c('M..tuberculosis','Irradiated') ]
+BCG_vs_Control_rld <- rld[ , rld$type %in% c('BCG','Control') ] 
+BCG_vs_Irradiated_rld <- rld[ , rld$type %in% c('BCG','Irradiated') ]
+Irradiated_vs_Control_rld <- rld[ , rld$type %in% c('Irradiated', 'Control') ]
+
+
+#resultsNames gives us EXAMPLES of what we can use, but not all of them, so we add what we want, which is timepoint and cross group comparisons 
+M_bovis_vs_Control <- results(dds, contrast=c('type','M..bovis','Control'))
+M_bovis_vs_BCG <- results(dds, contrast=c('type','M..bovis','BCG'))
+M_bovis_vs_Irradiated <- results(dds, contrast=c('type','M..bovis','Irradiated'))
+M_bovis_vs_M_tuberculosis <- results(dds, contrast=c('type','M..bovis','M..tuberculosis'))
+
+#M. tuberculosis
+M_tuberculosis_vs_Control <- results(dds, contrast=c('type','M..tuberculosis','Control'))
+M_tuberculosis_vs_BCG <- results(dds, contrast=c('type','M..tuberculosis','BCG'))
+M_tuberculosis_vs_Irradiated <- results(dds, contrast=c('type','M..tuberculosis','Irradiated'))
+
+#BCG
+BCG_vs_Control <- results(dds, contrast=c('type','BCG','Control'))
+BCG_vs_Irradiated <- results(dds, contrast=c('type','BCG','Irradiated'))
+
+#Irradiated
+Irradiated_vs_Control<- results(dds, contrast=c('type', 'Irradiated', 'Control'))
+
+summary(M_bovis_vs_Control)
+summary(M_bovis_vs_BCG) 
+summary(M_bovis_vs_Irradiated) 
+summary(M_bovis_vs_M_tuberculosis)
+summary(M_tuberculosis_vs_Control)
+summary(M_tuberculosis_vs_BCG)
+summary(M_tuberculosis_vs_Irradiated)
+summary(BCG_vs_Control)
+summary(BCG_vs_Irradiated)
+summary(Irradiated_vs_Control)
+
+####################### Annotation ########################
+
+library(org.Bt.eg.db)
+columns(org.Bt.eg.db)
+library(dplyr)
+
+#Annotation takes a slightly different form now that I have made the master file. I should be able to annotate ALL genes, rather than just the 0.1/0.05 sets. 
+#for this reason, I am extracting everything from the contrasts before I write them to csv, then annotating using merge. After this, I can filter as I want. 
+#M. bovis 
+M_bovis_vs_Control_DE_all <- as.data.frame(subset(M_bovis_vs_Control, padj < 1))
+M_bovis_vs_Control_DE_all <- tibble::rownames_to_column(M_bovis_vs_Control_DE_all, 'Gene_ID')
+
+M_bovis_vs_BCG_DE_all <- as.data.frame(subset(M_bovis_vs_BCG, padj < 1))
+M_bovis_vs_BCG_DE_all <- tibble::rownames_to_column(M_bovis_vs_BCG_DE_all, 'Gene_ID')
+
+M_bovis_vs_Irradiated_DE_all <- as.data.frame(subset(M_bovis_vs_Irradiated, padj < 1))
+M_bovis_vs_Irradiated_DE_all <- tibble::rownames_to_column(M_bovis_vs_Irradiated_DE_all, 'Gene_ID')
+
+M_bovis_vs_M_tuberculosis_DE_all <- as.data.frame(subset(M_bovis_vs_M_tuberculosis, padj < 1))
+M_bovis_vs_M_tuberculosis_DE_all <- tibble::rownames_to_column(M_bovis_vs_M_tuberculosis_DE_all, 'Gene_ID')
+
+
+#M. tuberculosis
+M_tuberculosis_vs_Control_DE_all <- as.data.frame(subset(M_tuberculosis_vs_Control, padj < 1))
+M_tuberculosis_vs_Control_DE_all <- tibble::rownames_to_column(M_tuberculosis_vs_Control_DE_all, 'Gene_ID')
+
+M_tuberculosis_vs_BCG_DE_all <- as.data.frame(subset(M_tuberculosis_vs_BCG, padj < 1))
+M_tuberculosis_vs_BCG_DE_all <- tibble::rownames_to_column(M_tuberculosis_vs_BCG_DE_all, 'Gene_ID')
+
+M_tuberculosis_vs_Irradiated_DE_all <- as.data.frame(subset(M_tuberculosis_vs_Irradiated, padj < 1))
+M_tuberculosis_vs_Irradiated_DE_all <- tibble::rownames_to_column(M_tuberculosis_vs_Irradiated_DE_all, 'Gene_ID')
+
+#BCG
+BCG_vs_Control_DE_all <- as.data.frame(subset(BCG_vs_Control, padj < 1))
+BCG_vs_Control_DE_all <- tibble::rownames_to_column(BCG_vs_Control_DE_all, 'Gene_ID')
+
+BCG_vs_Irradiated_DE_all <- as.data.frame(subset(BCG_vs_Irradiated, padj < 1))
+BCG_vs_Irradiated_DE_all <- tibble::rownames_to_column(BCG_vs_Irradiated_DE_all, 'Gene_ID')
+
+#Irradiated
+Irradiated_vs_Control_DE_all <- as.data.frame(subset(Irradiated_vs_Control, padj < 1))
+Irradiated_vs_Control_DE_all <- tibble::rownames_to_column(Irradiated_vs_Control_DE_all, 'Gene_ID')
+
+#Now that the DE dataframes are made, its time to merge:
+M_bovis_vs_Control_DE_annotated <- merge(M_bovis_vs_Control_DE_all, Bovine_annotation_MF2, by = 'Gene_ID', all.x = TRUE)
+M_bovis_vs_BCG_DE_annotated <- merge(M_bovis_vs_BCG_DE_all , Bovine_annotation_MF2, by = 'Gene_ID', all.x = TRUE)
+M_bovis_vs_Irradiated_DE_annotated <- merge(M_bovis_vs_Irradiated_DE_all, Bovine_annotation_MF2, by = 'Gene_ID', all.x = TRUE)
+M_bovis_vs_M_tuberculosis_DE_annotated <- merge(M_bovis_vs_M_tuberculosis_DE_all, Bovine_annotation_MF2, by = 'Gene_ID', all.x = TRUE)
+M_tuberculosis_vs_Control_DE_annotated <- merge(M_tuberculosis_vs_Control_DE_all, Bovine_annotation_MF2, by = 'Gene_ID', all.x = TRUE)
+M_tuberculosis_vs_BCG_DE_annotated <- merge(M_tuberculosis_vs_BCG_DE_all, Bovine_annotation_MF2, by = 'Gene_ID', all.x = TRUE)
+M_tuberculosis_vs_Irradiated_DE_annotated <- merge(M_tuberculosis_vs_Irradiated_DE_all, Bovine_annotation_MF2, by = 'Gene_ID', all.x = TRUE)
+BCG_vs_Control_DE_annotated <- merge(BCG_vs_Control_DE_all, Bovine_annotation_MF2, by = 'Gene_ID', all.x = TRUE)
+BCG_vs_Irradiated_DE_annotated <- merge(BCG_vs_Irradiated_DE_all, Bovine_annotation_MF2, by = 'Gene_ID', all.x = TRUE)
+Irradiated_vs_Control_DE_annotated <- merge(Irradiated_vs_Control_DE_all, Bovine_annotation_MF2, by = 'Gene_ID', all.x = TRUE)
+
+#And now we can subset by whatever adjusted pvalue we want without ever having to re-annotate. Lets do 0.05 and then write both to .csv
+M_bovis_vs_Control_DE_annotated_0.05 <- as.data.frame(subset(M_bovis_vs_Control_DE_annotated, padj < 0.05))
+M_bovis_vs_BCG_DE_annotated_0.05 <- as.data.frame(subset(M_bovis_vs_BCG_DE_annotated, padj < 0.05))
+M_bovis_vs_Irradiated_DE_annotated_0.05 <- as.data.frame(subset(M_bovis_vs_Irradiated_DE_annotated, padj < 0.05))
+M_bovis_vs_M_tuberculosis_DE_annotated_0.05 <- as.data.frame(subset(M_bovis_vs_M_tuberculosis_DE_annotated, padj < 0.05))
+M_tuberculosis_vs_Control_DE_annotated_0.05 <- as.data.frame(subset(M_tuberculosis_vs_Control_DE_annotated, padj < 0.05))
+M_tuberculosis_vs_BCG_DE_annotated_0.05 <- as.data.frame(subset(M_tuberculosis_vs_BCG_DE_annotated, padj < 0.05))
+M_tuberculosis_vs_Irradiated_DE_annotated_0.05 <- as.data.frame(subset(M_tuberculosis_vs_Irradiated_DE_annotated, padj < 0.05))
+BCG_vs_Control_DE_annotated_0.05 <- as.data.frame(subset(BCG_vs_Control_DE_annotated, padj < 0.05))
+BCG_vs_Irradiated_DE_annotated_0.05 <- as.data.frame(subset(BCG_vs_Irradiated_DE_annotated, padj < 0.05))
+Irradiated_vs_Control_DE_annotated_0.05 <- as.data.frame(subset(Irradiated_vs_Control_DE_annotated, padj < 0.05))
+
+write.csv(M_bovis_vs_Control_DE_annotated, file='M_bovis_vs_Control_DE_annotated.csv', row.names = FALSE)
+write.csv(M_bovis_vs_Control_DE_annotated_0.05, file='M_bovis_vs_Control_DE_annotated_0.05.csv', row.names = FALSE)
+
+write.csv(M_bovis_vs_BCG_DE_annotated, file='M_bovis_vs_BCG_DE_annotated.csv', row.names = FALSE)
+write.csv(M_bovis_vs_BCG_DE_annotated_0.05, file='M_bovis_vs_BCG_DE_annotated_0.05.csv', row.names = FALSE)
+
+write.csv(M_bovis_vs_Irradiated_DE_annotated, file='M_bovis_vs_Irradiated_DE_annotated.csv', row.names = FALSE)
+write.csv(M_bovis_vs_Irradiated_DE_annotated_0.05, file='M_bovis_vs_Irradiated_DE_annotated_0.05.csv', row.names = FALSE)
+
+write.csv(M_bovis_vs_M_tuberculosis_DE_annotated, file='M_bovis_vs_M_tuberculosis_DE_annotated.csv', row.names = FALSE)
+write.csv(M_bovis_vs_M_tuberculosis_DE_annotated_0.05, file='M_bovis_vs_M_tuberculosis_DE_annotated_0.05.csv', row.names = FALSE)
+
+write.csv(M_tuberculosis_vs_Control_DE_annotated, file='M_tuberculosis_vs_Control_DE_annotated.csv', row.names = FALSE)
+write.csv(M_tuberculosis_vs_Control_DE_annotated_0.05, file='M_tuberculosis_vs_Control_DE_annotated_0.05.csv', row.names = FALSE)
+
+write.csv(M_tuberculosis_vs_BCG_DE_annotated, file='M_tuberculosis_vs_BCG_DE_annotated.csv', row.names = FALSE)
+write.csv(M_tuberculosis_vs_BCG_DE_annotated_0.05, file='M_tuberculosis_vs_BCG_DE_annotated_0.05.csv', row.names = FALSE)
+
+write.csv(M_tuberculosis_vs_Irradiated_DE_annotated, file='M_tuberculosis_vs_Irradiated_DE_annotated.csv', row.names = FALSE)
+write.csv(M_tuberculosis_vs_Irradiated_DE_annotated_0.05, file='M_tuberculosis_vs_Irradiated_DE_annotated_0.05.csv', row.names = FALSE)
+
+write.csv(BCG_vs_Control_DE_annotated, file='BCG_vs_Control_DE_annotated.csv', row.names = FALSE)
+write.csv(BCG_vs_Control_DE_annotated_0.05, file='BCG_vs_Control_DE_annotated_0.05.csv', row.names = FALSE)
+
+write.csv(BCG_vs_Irradiated_DE_annotated, file='BCG_vs_Irradiated_DE_annotated.csv', row.names = FALSE)
+write.csv(BCG_vs_Irradiated_DE_annotated_0.05, file='BCG_vs_Irradiated_DE_annotated_0.05.csv', row.names = FALSE)
+
+write.csv(Irradiated_vs_Control_DE_annotated, file='Irradiated_vs_Control_DE_annotated.csv', row.names = FALSE)
+write.csv(Irradiated_vs_Control_DE_annotated_0.05, file='Irradiated_vs_Control_DE_annotated_0.05.csv', row.names = FALSE)
+
+#############################################################
+######################### Plots #############################
+#############################################################
+
+### PCAs ###
+#Grouped
+library(ggplot2)
+All_PCA <- plotPCA(rld, intgroup=c('type'))
+plot(All_PCA)
+All_PCA <- plotPCA(rld, intgroup=c('type')) +
+    geom_text(aes(label=dds$X),vjust=2)
+plot(All_PCA)
+
+#Individual
+M_bovis_vs_Control_PCA <- plotPCA(M_bovis_vs_Control_rld, 'type')
+M_bovis_vs_BCG_PCA <-  plotPCA(M_bovis_vs_BCG_rld, 'type')
+M_bovis_vs_Irradiated_PCA <- plotPCA(M_bovis_vs_Irradiated_rld, 'type')
+M_bovis_vs_M_tuberculosis_PCA <- plotPCA(M_bovis_vs_M_tuberculosis_rld, 'type')
+M_tuberculosis_vs_Control_PCA <- plotPCA(M_tuberculosis_vs_Control_rld, 'type')
+M_tuberculosis_vs_BCG_PCA <- plotPCA(M_tuberculosis_vs_BCG_rld, 'type')
+M_tuberculosis_vs_Irradiated_PCA <- plotPCA(M_tuberculosis_vs_Irradiated_rld, 'type')
+BCG_vs_Control_PCA <- plotPCA(BCG_vs_Control_rld, 'type')
+BCG_vs_Irradiated_PCA <- plotPCA(BCG_vs_Irradiated_rld, 'type')
+Irradiated_vs_Control_PCA <- plotPCA(Irradiated_vs_Control_rld, 'type')
+
+M_bovis_vs_Control_PCA 
+M_bovis_vs_BCG_PCA
+M_bovis_vs_Irradiated_PCA
+M_bovis_vs_M_tuberculosis_PCA
+M_tuberculosis_vs_Control_PCA
+M_tuberculosis_vs_BCG_PCA 
+M_tuberculosis_vs_Irradiated_PCA
+BCG_vs_Control_PCA
+BCG_vs_Irradiated_PCA
+Irradiated_vs_Control_PCA 
+
+
+WT24h_WT0h_rld         <- rld[ , rld$group %in% c('24hWT','0hWT') ]
+M_bovis_vs_Control_rld <- rld[ , rld$type %in% c('M...bovis','Control') ]
+M_bovis_vs_Control_PCA <- plotPCA(M_bovis_vs_Control_rld, 'type')
+M_bovis_vs_Control_PCA 
+
+Irradiated_vs_Control_rld <- rld[ , rld$type %in% c('Irradiated', 'Control') ]
+Irradiated_vs_Control_PCA <- plotPCA(Irradiated_vs_Control_rld, 'type')
+Irradiated_vs_Control_PCA 
+### Upset R plot with cutoffs ###
+
+#vs control groups
+M_bovis_vs_Control_DE_annotated_0.05$M.bovis <- rep(1,nrow(M_bovis_vs_Control_DE_annotated_0.05))
+M_tuberculosis_vs_Control_DE_annotated_0.05$M.tuberculosis <- rep(1,nrow(M_tuberculosis_vs_Control_DE_annotated_0.05))
+BCG_vs_Control_DE_annotated_0.05$BCG <- rep(1,nrow(BCG_vs_Control_DE_annotated_0.05))
+Irradiated_vs_Control_DE_annotated_0.05$Irradiated <- rep(1,nrow(Irradiated_vs_Control_DE_annotated_0.05))
+
+
+Gene_list <- as.data.frame(Bovine_annotation_MF2$Symbol)
+colnames(Gene_list)[1] <- 'Symbol'
+
+UpsetR_figure <- merge(Gene_list, M_bovis_vs_Control_DE_annotated_0.05, by = 'Symbol', all.x = TRUE)
+UpsetR_figure$log2FoldChange <- NULL
+UpsetR_figure$pvalue <- NULL
+UpsetR_figure$padj <- NULL
+UpsetR_figure$baseMean <- NULL
+UpsetR_figure$lfcSE <- NULL
+UpsetR_figure$stat <- NULL
+UpsetR_figure$Gene_ID <- NULL
+UpsetR_figure$Ensembl <- NULL
+UpsetR_figure$Genename <- NULL
+UpsetR_figure$Description <- NULL
+UpsetR_figure$Chromosome <- NULL
+UpsetR_figure$Start_location <- NULL
+UpsetR_figure$End_location <- NULL
+UpsetR_figure$Strand <- NULL
+
+UpsetR_figure <- merge(UpsetR_figure, M_tuberculosis_vs_Control_DE_annotated_0.05, by = 'Symbol', all.x = TRUE)
+UpsetR_figure$log2FoldChange <- NULL
+UpsetR_figure$pvalue <- NULL
+UpsetR_figure$padj <- NULL
+UpsetR_figure$baseMean <- NULL
+UpsetR_figure$lfcSE <- NULL
+UpsetR_figure$stat <- NULL
+UpsetR_figure$Gene_ID <- NULL
+UpsetR_figure$Ensembl <- NULL
+UpsetR_figure$Genename <- NULL
+UpsetR_figure$Description <- NULL
+UpsetR_figure$Chromosome <- NULL
+UpsetR_figure$Start_location <- NULL
+UpsetR_figure$End_location <- NULL
+UpsetR_figure$Strand <- NULL
+
+UpsetR_figure <- merge(UpsetR_figure, BCG_vs_Control_DE_annotated_0.05, by = 'Symbol', all.x = TRUE)
+UpsetR_figure$log2FoldChange <- NULL
+UpsetR_figure$pvalue <- NULL
+UpsetR_figure$padj <- NULL
+UpsetR_figure$baseMean <- NULL
+UpsetR_figure$lfcSE <- NULL
+UpsetR_figure$stat <- NULL
+UpsetR_figure$Gene_ID <- NULL
+UpsetR_figure$Ensembl <- NULL
+UpsetR_figure$Genename <- NULL
+UpsetR_figure$Description <- NULL
+UpsetR_figure$Chromosome <- NULL
+UpsetR_figure$Start_location <- NULL
+UpsetR_figure$End_location <- NULL
+UpsetR_figure$Strand <- NULL
+
+UpsetR_figure <- merge(UpsetR_figure, Irradiated_vs_Control_DE_annotated_0.05, by = 'Symbol', all.x = TRUE)
+UpsetR_figure$log2FoldChange <- NULL
+UpsetR_figure$pvalue <- NULL
+UpsetR_figure$padj <- NULL
+UpsetR_figure$baseMean <- NULL
+UpsetR_figure$lfcSE <- NULL
+UpsetR_figure$stat <- NULL
+UpsetR_figure$Gene_ID <- NULL
+UpsetR_figure$Ensembl <- NULL
+UpsetR_figure$Genename <- NULL
+UpsetR_figure$Description <- NULL
+UpsetR_figure$Chromosome <- NULL
+UpsetR_figure$Start_location <- NULL
+UpsetR_figure$End_location <- NULL
+UpsetR_figure$Strand <- NULL
+
+UpsetR_figure[is.na(UpsetR_figure)] <- 0
+
+#duplication can happen. Lets use dpylr
+UpsetR_figure <- distinct(UpsetR_figure, Symbol, .keep_all= TRUE)
+
+upset(UpsetR_figure, sets = c('M.bovis', 'M.tuberculosis', 'BCG', 'Irradiated'), 
+							sets.bar.
+							= c('#80ccff', '#adebad', '#ff8080', '#ffce99'), order.by = 'freq', empty.intersections = 'on',
+							matrix.color = '#3d3d5c', main.bar.color = '#202060', mainbar.y.label = 'DE Gene overlap size', sets.x.label = 'DE Gene set size', text.scale = 1.65)
+ff4638					
+#vs infected groups
+M_bovis_vs_BCG_DE_annotated_0.05$M.bovis_vs_BCG <- rep(1,nrow(M_bovis_vs_BCG_DE_annotated_0.05))
+M_bovis_vs_Irradiated_DE_annotated_0.05$M.bovis_vs_Irradiated <- rep(1,nrow(M_bovis_vs_Irradiated_DE_annotated_0.05))
+M_bovis_vs_M_tuberculosis_DE_annotated_0.05$M.bovis_vs_M.tuberculosis <- rep(1,nrow(M_bovis_vs_M_tuberculosis_DE_annotated_0.05))
+M_tuberculosis_vs_BCG_DE_annotated_0.05$M.tuberculosis_vs_BCG <- rep(1,nrow(M_tuberculosis_vs_BCG_DE_annotated_0.05))
+M_tuberculosis_vs_Irradiated_DE_annotated_0.05$M.tuberculosis_vs_Irradiated <- rep(1,nrow(M_tuberculosis_vs_Irradiated_DE_annotated_0.05))
+BCG_vs_Irradiated_DE_annotated_0.05$BCG_vs_Irradiated <- rep(1,nrow(BCG_vs_Irradiated_DE_annotated_0.05))
+
+Gene_list <- as.data.frame(Bovine_annotation_MF2$Symbol)
+colnames(Gene_list)[1] <- 'Symbol'
+
+UpsetR_figure <- merge(Gene_list, M_bovis_vs_BCG_DE_annotated_0.05, by = 'Symbol', all.x = TRUE)
+UpsetR_figure$log2FoldChange <- NULL
+UpsetR_figure$pvalue <- NULL
+UpsetR_figure$padj <- NULL
+UpsetR_figure$baseMean <- NULL
+UpsetR_figure$lfcSE <- NULL
+UpsetR_figure$stat <- NULL
+UpsetR_figure$Gene_ID <- NULL
+UpsetR_figure$Ensembl <- NULL
+UpsetR_figure$Genename <- NULL
+UpsetR_figure$Description <- NULL
+UpsetR_figure$Chromosome <- NULL
+UpsetR_figure$Start_location <- NULL
+UpsetR_figure$End_location <- NULL
+UpsetR_figure$Strand <- NULL
+
+UpsetR_figure <- merge(UpsetR_figure, M_bovis_vs_Irradiated_DE_annotated_0.05, by = 'Symbol', all.x = TRUE)
+UpsetR_figure$log2FoldChange <- NULL
+UpsetR_figure$pvalue <- NULL
+UpsetR_figure$padj <- NULL
+UpsetR_figure$baseMean <- NULL
+UpsetR_figure$lfcSE <- NULL
+UpsetR_figure$stat <- NULL
+UpsetR_figure$Gene_ID <- NULL
+UpsetR_figure$Ensembl <- NULL
+UpsetR_figure$Genename <- NULL
+UpsetR_figure$Description <- NULL
+UpsetR_figure$Chromosome <- NULL
+UpsetR_figure$Start_location <- NULL
+UpsetR_figure$End_location <- NULL
+UpsetR_figure$Strand <- NULL
+
+UpsetR_figure <- merge(UpsetR_figure, M_bovis_vs_M_tuberculosis_DE_annotated_0.05, by = 'Symbol', all.x = TRUE)
+UpsetR_figure$log2FoldChange <- NULL
+UpsetR_figure$pvalue <- NULL
+UpsetR_figure$padj <- NULL
+UpsetR_figure$baseMean <- NULL
+UpsetR_figure$lfcSE <- NULL
+UpsetR_figure$stat <- NULL
+UpsetR_figure$Gene_ID <- NULL
+UpsetR_figure$Ensembl <- NULL
+UpsetR_figure$Genename <- NULL
+UpsetR_figure$Description <- NULL
+UpsetR_figure$Chromosome <- NULL
+UpsetR_figure$Start_location <- NULL
+UpsetR_figure$End_location <- NULL
+UpsetR_figure$Strand <- NULL
+
+UpsetR_figure <- merge(UpsetR_figure, M_tuberculosis_vs_BCG_DE_annotated_0.05, by = 'Symbol', all.x = TRUE)
+UpsetR_figure$log2FoldChange <- NULL
+UpsetR_figure$pvalue <- NULL
+UpsetR_figure$padj <- NULL
+UpsetR_figure$baseMean <- NULL
+UpsetR_figure$lfcSE <- NULL
+UpsetR_figure$stat <- NULL
+UpsetR_figure$Gene_ID <- NULL
+UpsetR_figure$Ensembl <- NULL
+UpsetR_figure$Genename <- NULL
+UpsetR_figure$Description <- NULL
+UpsetR_figure$Chromosome <- NULL
+UpsetR_figure$Start_location <- NULL
+UpsetR_figure$End_location <- NULL
+UpsetR_figure$Strand <- NULL
+
+UpsetR_figure <- merge(UpsetR_figure, M_tuberculosis_vs_Irradiated_DE_annotated_0.05, by = 'Symbol', all.x = TRUE)
+UpsetR_figure$log2FoldChange <- NULL
+UpsetR_figure$pvalue <- NULL
+UpsetR_figure$padj <- NULL
+UpsetR_figure$baseMean <- NULL
+UpsetR_figure$lfcSE <- NULL
+UpsetR_figure$stat <- NULL
+UpsetR_figure$Gene_ID <- NULL
+UpsetR_figure$Ensembl <- NULL
+UpsetR_figure$Genename <- NULL
+UpsetR_figure$Description <- NULL
+UpsetR_figure$Chromosome <- NULL
+UpsetR_figure$Start_location <- NULL
+UpsetR_figure$End_location <- NULL
+UpsetR_figure$Strand <- NULL
+
+UpsetR_figure <- merge(UpsetR_figure, BCG_vs_Irradiated_DE_annotated_0.05, by = 'Symbol', all.x = TRUE)
+UpsetR_figure$log2FoldChange <- NULL
+UpsetR_figure$pvalue <- NULL
+UpsetR_figure$padj <- NULL
+UpsetR_figure$baseMean <- NULL
+UpsetR_figure$lfcSE <- NULL
+UpsetR_figure$stat <- NULL
+UpsetR_figure$Gene_ID <- NULL
+UpsetR_figure$Ensembl <- NULL
+UpsetR_figure$Genename <- NULL
+UpsetR_figure$Description <- NULL
+UpsetR_figure$Chromosome <- NULL
+UpsetR_figure$Start_location <- NULL
+UpsetR_figure$End_location <- NULL
+UpsetR_figure$Strand <- NULL
+
+UpsetR_figure[is.na(UpsetR_figure)] <- 0
+UpsetR_figure <- distinct(UpsetR_figure, Symbol, .keep_all= TRUE)
+
+upset(UpsetR_figure, sets = c('M.bovis_vs_BCG', 'M.bovis_vs_Irradiated', 'M.bovis_vs_M.tuberculosis', 'M.tuberculosis_vs_BCG', 'M.tuberculosis_vs_Irradiated', 'BCG_vs_Irradiated'), 
+							sets.bar.color = c('#009999', '#df9fbf', '#ffffb3', '#c299ff', '#805500', '#99ffeb'), order.by = 'freq', empty.intersections = 'on',
+							matrix.color = '#3d3d5c', main.bar.color = '#202060', mainbar.y.label = 'DE Gene overlap size', sets.x.label = 'DE Gene set size', text.scale = 1.65 )
+		
+### EnhancedVolcano ###
+library(EnhancedVolcano)
+library(readr)
+
+EnhancedVolcano(M_bovis_vs_Control_DE_annotated_0.05, lab = NA,  x = 'log2FoldChange', y = 'padj', pCutoff = 5e-2,
+                col=c('#666666', '#666666', '#4d94ff', '#ff3333'), 
+				title = 'M. bovis versus Control',xlim = c(-12, 12), ylim = c(0, -log10(10e-180)), 
+                border = 'full', gridlines.major = FALSE, gridlines.minor = FALSE, borderColour = '#4d4d4d', legendPosition = 'none')
+				
+EnhancedVolcano(M_bovis_vs_BCG_DE_annotated_0.05 , lab = NA,  x = 'log2FoldChange', y = 'padj', pCutoff = 5e-2,
+                col=c('#666666', '#666666', '#4d94ff', '#ff3333'), 
+				title = 'M. bovis versus BCG',xlim = c(-12, 12), ylim = c(0, -log10(10e-180)), 
+                border = 'full', gridlines.major = FALSE, gridlines.minor = FALSE, borderColour = '#4d4d4d', legendPosition = 'none')
+				
+EnhancedVolcano(M_bovis_vs_Irradiated_DE_annotated_0.05, lab = NA,  x = 'log2FoldChange', y = 'padj', pCutoff = 5e-2,
+                col=c('#666666', '#666666', '#4d94ff', '#ff3333'), 
+				title = 'M. bovis versus Irradiated',xlim = c(-12, 12), ylim = c(0, -log10(10e-180)), 
+                border = 'full', gridlines.major = FALSE, gridlines.minor = FALSE, borderColour = '#4d4d4d', legendPosition = 'none')
+				
+EnhancedVolcano(M_bovis_vs_M_tuberculosis_DE_annotated_0.05, lab = NA,  x = 'log2FoldChange', y = 'padj', pCutoff = 5e-2,
+                col=c('#666666', '#666666', '#4d94ff', '#ff3333'), 
+				title = 'M. bovis versus M. tuberculosis',xlim = c(-12, 12), ylim = c(0, -log10(10e-180)), 
+                border = 'full', gridlines.major = FALSE, gridlines.minor = FALSE, borderColour = '#4d4d4d', legendPosition = 'none')
+				
+EnhancedVolcano(M_tuberculosis_vs_Control_DE_annotated_0.05, lab = NA,  x = 'log2FoldChange', y = 'padj', pCutoff = 5e-2,
+                col=c('#666666', '#666666', '#4d94ff', '#ff3333'), 
+				title = 'M. tuberculosis versus Control',xlim = c(-12, 12), ylim = c(0, -log10(10e-180)), 
+                border = 'full', gridlines.major = FALSE, gridlines.minor = FALSE, borderColour = '#4d4d4d', legendPosition = 'none')
+				
+EnhancedVolcano(M_tuberculosis_vs_BCG_DE_annotated_0.05, lab = NA,  x = 'log2FoldChange', y = 'padj', pCutoff = 5e-2,
+                col=c('#666666', '#666666', '#4d94ff', '#ff3333'), 
+				title = 'M. tuberculosis versus BCG',xlim = c(-12, 12), ylim = c(0, -log10(10e-180)), 
+                border = 'full', gridlines.major = FALSE, gridlines.minor = FALSE, borderColour = '#4d4d4d', legendPosition = 'none')
+				
+EnhancedVolcano(M_tuberculosis_vs_Irradiated_DE_annotated_0.05, lab = NA,  x = 'log2FoldChange', y = 'padj', pCutoff = 5e-2,
+                col=c('#666666', '#666666', '#4d94ff', '#ff3333'), 
+				title = 'M. tuberculosis versus Irradiated',xlim = c(-12, 12), ylim = c(0, -log10(10e-180)), 
+                border = 'full', gridlines.major = FALSE, gridlines.minor = FALSE, borderColour = '#4d4d4d', legendPosition = 'none')
+				
+EnhancedVolcano(BCG_vs_Control_DE_annotated_0.05, lab = NA,  x = 'log2FoldChange', y = 'padj', pCutoff = 5e-2,
+                col=c('#666666', '#666666', '#4d94ff', '#ff3333'), 
+				title = 'BCG versus Control',xlim = c(-12, 12), ylim = c(0, -log10(10e-180)), 
+                border = 'full', gridlines.major = FALSE, gridlines.minor = FALSE, borderColour = '#4d4d4d', legendPosition = 'none')
+				
+EnhancedVolcano(BCG_vs_Irradiated_DE_annotated_0.05, lab = NA,  x = 'log2FoldChange', y = 'padj', pCutoff = 5e-2,
+                col=c('#666666', '#666666', '#4d94ff', '#ff3333'), 
+				title = 'BCG versus Irradiated',xlim = c(-12, 12), ylim = c(0, -log10(10e-180)), 
+                border = 'full', gridlines.major = FALSE, gridlines.minor = FALSE, borderColour = '#4d4d4d', legendPosition = 'none')
+
+EnhancedVolcano(Irradiated_vs_Control_DE_annotated_0.05, lab = NA,  x = 'log2FoldChange', y = 'padj', pCutoff = 5e-2,
+                col=c('#666666', '#666666', '#4d94ff', '#ff3333'), 
+				title = 'Irradiated versus Control',xlim = c(-12, 12), ylim = c(0, -log10(10e-180)), 
+                border = 'full', gridlines.major = FALSE, gridlines.minor = FALSE, borderColour = '#4d4d4d', legendPosition = 'none')
+				
+### Heatmaps ###
+
+library(pheatmap)
+KO_combined_heatmap <- read.csv('KO_combined_heatmap_no_outlier.csv')
+#KO_combined_heatmap[is.na(KO_combined_heatmap)] = 0
+#COMP_combined_heatmap[is.na(COMP_combined_heatmap)] = 0
+
+#There is too many rows in the KO set, so I am taking the top X High/Low expressed genes from each set, creating 4 heatmaps.
+library(dplyr)
+KO_UR_350 <- top_n(KO_combined_heatmap, 350, KO_combined_heatmap$KO)
+KO_UR_1000 <- top_n(KO_combined_heatmap, 1000, KO_combined_heatmap$KO)
+KO_DR_350 <- top_n(KO_combined_heatmap, -350, KO_combined_heatmap$KO)
+KO_DR_1000 <- top_n(KO_combined_heatmap, -1000, KO_combined_heatmap$KO)
+
+rownames(KO_UR_350) <- KO_UR_350[, 1]
+KO_UR_350[, 1] <- NULL
+rownames(KO_DR_350) <- KO_DR_350[, 1]
+KO_DR_350[, 1] <- NULL
+rownames(KO_UR_1000) <- KO_UR_1000[, 1]
+KO_UR_1000[, 1] <- NULL
+rownames(KO_DR_1000) <- KO_DR_1000[, 1]
+KO_DR_1000[, 1] <- NULL
+
+
+#This is to scale the data to stop the large values dominating the colour scale, but given that this data is already normalised and its l2fc values, im not sure I need or even should scale it further
+#KO_UR_100 = scale(KO_UR_100)
+#COMP_combined_heatmap = scale(COMP_combined_heatmap)
+
+
+pheatmap(KO_UR_350, color = colorRampPalette(c('#ffb3b3', '#fc9272', '#de2d26', '#ff0000'))(50), show_rownames = F, cluster_rows=T, cutree_cols = 3, cluster_cols=F,  
+main = '350 top upregulated KO response genes at 24hpi compared to Alv mac dataset at 24 and 48hpi', fontsize = 10,  na_col = '#f2f2f2')
+
+pheatmap(KO_UR_1000, color = colorRampPalette(c('#3182bd', '#fc9272', '#de2d26', '#ff0000'))(50), show_rownames = F, cluster_rows=T, cutree_cols = 3, cluster_cols=F,  
+main = '1000 top upregulated KO response genes at 24hpi compared to Alv mac dataset at 24 and 48hpi', fontsize = 10,  na_col = '#f2f2f2')
+
+pheatmap(KO_DR_350, color = colorRampPalette(c('#0570b0', '#74a9cf', '#bdc9e1', '#f1eef6'))(50), show_rownames = F, cluster_rows=T, cutree_cols = 3, cluster_cols=F,  
+main = '350 top downregulated KO response genes at 24hpi compared to Alv mac dataset at 24 and 48hpi', fontsize = 10,  na_col = '#f2f2f2')
+
+pheatmap(KO_DR_1000, color = colorRampPalette(c('#0570b0', '#74a9cf', '#bdc9e1', '#f1eef6'))(50), show_rownames = F, cluster_rows=T, cutree_cols = 3, cluster_cols=F,  
+main = '1000 top downregulated KO response genes at 24hpi compared to Alv mac dataset at 24 and 48hpi', fontsize = 10,  na_col = '#f2f2f2')
+
+
+### Bar chart ###
+#Create vectors with desirable variables for graphing
+Time.vec<-c(rep('M. bovis',2), rep('M. tuberculosis',2), rep('Irradiated',2), rep('BCG',2))
+Variable.vec<-c('Up','Down','Up','Down','Up','Down','Up','Down')
+Variable.condition.vec<-c('delta_up','delta_down','delta_up','delta_down','delta_up',
+                          'delta_down','delta_up','delta_down')
+
+values.vec<-rep('x',8)
+
+#here, we need the LF2C, so we use the LFC <> abs(1) datasets/0.05 datasets and apply the 0.05 cutoff
+M_bovis_vs_Control_logFC <- as.vector(M_bovis_vs_Control_DE_annotated_0.05['log2FoldChange'])
+values.vec[1] <-sum(M_bovis_vs_Control_logFC > 0)
+values.vec[2] <-sum(M_bovis_vs_Control_logFC < 0)
+
+M_tuberculosis_vs_Control_logFC <- as.vector(M_tuberculosis_vs_Control_DE_annotated_0.05['log2FoldChange'])
+values.vec[3] <-sum(M_tuberculosis_vs_Control_logFC > 0)
+values.vec[4] <-sum(M_tuberculosis_vs_Control_logFC < 0)
+
+BCG_vs_Control_logFC <- as.vector(BCG_vs_Control_DE_annotated_0.05['log2FoldChange'])
+values.vec[5] <-sum(BCG_vs_Control_logFC > 0)
+values.vec[6] <-sum(BCG_vs_Control_logFC < 0)
+
+Irradiated_vs_Control_logFC <- as.vector(Irradiated_vs_Control_DE_annotated_0.05['log2FoldChange'])
+values.vec[7] <-sum(Irradiated_vs_Control_logFC > 0)
+values.vec[8] <-sum(Irradiated_vs_Control_logFC < 0)
+
+
+bar_data.raw<-data.frame(a=character(),b=character(),c=numeric(), d=character())
+bar_data<-rbind(bar_data.raw, data.frame(a=Time.vec, b=Variable.vec, d=as.numeric(values.vec), e=Variable.condition.vec))
+colnames(bar_data)<-c('Group','Variable','Value','Variable.condition')
+
+#Make custom labels for legend of graph to include both italicised and plain text
+label_5<-expression(paste(italic(''),'Increased expression'))
+label_6<-expression(paste(italic(''),'Decreased expression'))
+
+q<-ggplot(bar_data, aes(Group), ylim(-10000:10000)) + 
+  geom_bar(data = subset(bar_data, Variable == 'Up'), 
+           aes(y = Value, fill = Variable.condition), stat = 'identity', position = 'dodge',colour='black',size=0.4,width=0.7) +
+  scale_fill_manual(values=c('#ff3333' ,'#4d94ff'), 
+                    name=' ',
+                    breaks=c('delta_up', 'delta_down'), #define the
+                    #breaks so that you can relabel
+                    labels=c(label_5, label_6)) +
+  geom_bar(data = subset(bar_data, Variable == 'Down'), #colours are bovis up, tb up, bovis down, tb down
+           aes(y = -Value, fill = Variable.condition), stat = 'identity', position = 'dodge',colour='black',size=0.4,width=0.7) + 
+  geom_hline(yintercept = 0,colour = 'black') +
+  theme(axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        legend.text.align = 0)  #aligning the legend labels to legend boxes
+
+
+#Defining custom subsets for adding stars to the graph
+x_up<-(data = subset(bar_data, Variable == 'Up'))
+x_down<-(data = subset(bar_data, Variable == 'Down'))
+x_delta_2_up<-subset(x_up[1,])
+x_delta_2_down<-(x_down[1,])
+x_delta_6_up<-(x_up[2,])
+x_delta_6_down<-(x_down[2,])
+x_delta_24_up<-(x_up[3,])
+x_delta_24_down<-(x_down[3,])
+x_delta_48_up<-(x_up[4,])
+x_delta_48_down<-(x_down[4,])
+
+q +
+  geom_text(data = subset(bar_data, Variable == 'Up'), 
+            aes(Group, Value, group=Variable.condition, label=Value),
+            position = position_dodge(width=0.45), vjust = -0.25, size=4) +
+  geom_text(data = subset(bar_data, Variable == 'Down'), 
+            aes(Group, -Value, group=Variable.condition, label=Value),
+            position = position_dodge(width=0.45), vjust = 1.25, size=4) +
+  geom_text(data = x_delta_48_up, 
+            aes(Group, Value, group=Variable.condition, label='*'),
+            position = position_dodge(width=0.45), vjust = -0.9, hjust= 0.4, size=4) +
+  geom_text(data = x_delta_48_down, 
+            aes(Group, -Value, group=Variable.condition, label='*'),
+            position = position_dodge(width=0.45), vjust = 2.5, hjust= 0.4, size=4) +
+  coord_cartesian(ylim = c(-5000, 5000)) +
+  scale_x_discrete(name='Experimental group vs control', breaks=c('M. bovis','M. tuberculosis', 'BCG', 'Irradiated'),
+                   labels=c('M. bovis','M. tuberculosis',  'Irradiated', 'BCG')) + 
+  scale_y_continuous('Number of differentially expressed genes') +
+  theme(legend.text=element_text(size=9),legend.key.size=unit(0.4,'cm')) + #changing size of legend
+  theme(axis.title.x=element_text(size=11)) +
+  theme(axis.title.y=element_text(size=11)) +
+  theme(aspect.ratio = 1.3) +
+  theme(legend.position='bottom', legend.box = 'horizontal') + #horizontal legend at bottom of graph
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = 'black', size=0.2)) +
+  annotate('text', x = 1, y = -5000, size=2.5, label = '* FDR < 0.05')
+
+
+  
+#Sample distances
+sampleDists <- dist(t(assay(vsd)))
+library('RColorBrewer')
+library('pheatmap')
+sampleDistMatrix <- as.matrix(sampleDists)
+#rownames(sampleDistMatrix) <- paste(vsd$timepoint, vsd$type, vsd$X ,sep='-')
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, 'Blues')) )(255)
+sample_distances <- pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors) 
+		 
+sample_distances
+
+
+### Gene clustering of top genes ###
+#hierarchical clustering of the genes, rather than the samples, as shown above. 
+library('genefilter')
+topVarGenes <- head(order(-rowVars(assay(rld))),50)
+mat <- assay(rld)[ topVarGenes, ]
+mat <- mat - rowMeans(mat)
+mat <- as.data.frame(mat)
+mat <- tibble::rownames_to_column(mat, 'Gene_ID')
+mat <- merge(mat, Bovine_annotation_MF2, by ='Gene_ID', all.x = TRUE)
+mat[, 39] <- NULL
+mat[, 38] <- NULL
+mat[, 37] <- NULL
+mat[, 36] <- NULL
+mat[, 35] <- NULL
+mat[, 34] <- NULL
+mat[, 33] <- NULL
+mat[, 32] <- NULL
+mat[, 1] <- NULL
+rownames(mat) <- mat[, 30]
+mat[, 30] <- NULL
+mat2 <- as.matrix(mat)
+View(mat2)
+df <- as.data.frame(colData(rld)['type'])
+pheatmap(mat2, annotation_col=df)
+
+### dot plots ###
+#First we need to get what is common to all four groups. I can use the upsetR plot for this (the VS control UpsetR, not the infected cross comparison)
+common <- UpsetR_figure
+common[common == 0] <- NA
+common <- na.omit(common)
+common <- as.data.frame(common[, -c(2:5)]) 
+colnames(common)[1] <- 'Symbol'
+
+Common_DE_FDRgenes_all <- merge(common, M_bovis_vs_Control_DE_annotated_0.05, by = 'Symbol', all.x = TRUE)
+Common_DE_FDRgenes_all <- as.data.frame(Common_DE_FDRgenes_all[, -c(2:3,5:7,9:16)])
+colnames(Common_DE_FDRgenes_all)[2] <- 'M. bovis infected bovine AM Log2FC'
+colnames(Common_DE_FDRgenes_all)[3] <- 'M. bovis infected bovine AM adjusted pvalue'
+
+
+Common_DE_FDRgenes_all <- merge(Common_DE_FDRgenes_all, M_tuberculosis_vs_Control_DE_annotated_0.05, by = 'Symbol', all.x = TRUE)
+Common_DE_FDRgenes_all <- Common_DE_FDRgenes_all[, -c(4:5,7:9,11:18)] 
+colnames(Common_DE_FDRgenes_all)[4] <- 'M. tuberculosis infected bovine AM Log2FC'
+colnames(Common_DE_FDRgenes_all)[5] <- 'M. tuberculosis infected bovine AM adjusted pvalue'
+
+
+Common_DE_FDRgenes_all <- merge(Common_DE_FDRgenes_all, Irradiated_vs_Control_DE_annotated_0.05, by = 'Symbol', all.x = TRUE)
+Common_DE_FDRgenes_all <- Common_DE_FDRgenes_all[, -c(6:7,9:11,13:20)] 
+colnames(Common_DE_FDRgenes_all)[6] <- 'Gamma irradiated M. bovis stimulated bovine AM Log2FC'
+colnames(Common_DE_FDRgenes_all)[7] <- 'Gamma irradiated M. bovis stimulated bovine AM adjusted pvalue'
+
+
+Common_DE_FDRgenes_all <- merge(Common_DE_FDRgenes_all, BCG_vs_Control_DE_annotated_0.05, by = 'Symbol', all.x = TRUE)
+Common_DE_FDRgenes_all <- Common_DE_FDRgenes_all[, -c(8:9,11:13,15:22)] 
+colnames(Common_DE_FDRgenes_all)[8] <- 'BCG infected bovine AM Log2FC'
+colnames(Common_DE_FDRgenes_all)[9] <- 'BCG infected bovine AM adjusted pvalue'
+
+
+Common_DE_FDRgenes_LFC <- subset(Common_DE_FDRgenes_all, select = c(1,2,4,6,8))
+#library(dplyr)
+# Remove duplicate rows of the dataframe
+Common_DE_FDRgenes_LFC <- distinct(Common_DE_FDRgenes_LFC, Symbol, .keep_all= TRUE)
+rownames(Common_DE_FDRgenes_LFC) <- Common_DE_FDRgenes_LFC[, 1]
+Common_DE_FDRgenes_LFC[,1] <- NULL
+Common_DE_FDRgenes_LFC_melt <- melt(Common_DE_FDRgenes_LFC)
+write.csv(Common_DE_FDRgenes_LFC_melt, file = 'Common_DE_FDRgenes_LFC_melt2.csv', row.names = FALSE)
+
+#Dot plot#
+#I think here I did some manual editing. Until I come up with some code, I go from this to this:
+	
+variable							value
+M. bovis infected bovine AM Log2FC 4.53294772
+M. bovis infected bovine AM Log2FC 1.58795433
+M. bovis infected bovine AM Log2FC 0.7372014
+
+#to
+Sample at 24hpi	Log2 fold change	colour	Genes	Code
+hAM TB			0.438646958			1				#8cd98c
+hAM TB			0.593722111			1				#8cd98c
+hAM TB			2.504088211			1		ADORA2A	#8cd98c
+
+Common_DE_FDRgenes_LFC_melt <- read_csv('Common_DE_FDRgenes_LFC_melt.csv')
+
+p = ggplot(Common_DE_FDRgenes_LFC_melt, aes(x=Common_DE_FDRgenes_LFC_melt$`Experimental group`, y=Common_DE_FDRgenes_LFC_melt$`Log2 fold change`, fill = factor(Colour))) +
+    geom_dotplot(binaxis='y', stackdir='center',  method = 'dotdensity', stackratio = 0.7, dotsize = 1, binwidth = 0.2, show.legend = FALSE) +
+    geom_label_repel(aes(label = Common_DE_FDRgenes_LFC_melt$Genes), box.padding   = 1.3, point.padding = 1.45, label.size = 0.5, label.padding = 0.35,
+	show.legend = FALSE, na.rm = TRUE, colour = '#262626', label.r = 0.35, max.overlaps = 50) +
+	geom_hline(yintercept=0, linetype='dashed', color = '#000000')
+	
+p + labs(x = 'Experimental group', y = 'Log2 fold change')  +
+    scale_fill_manual(values=setNames(Common_DE_FDRgenes_LFC_melt$Code, Common_DE_FDRgenes_LFC_melt$Colour)) +
+    scale_colour_manual(values=setNames(Common_DE_FDRgenes_LFC_melt$Code, Common_DE_FDRgenes_LFC_melt$Colour)) +
+	theme(axis.text.x = element_text(color='#262626', size=14),
+          axis.text.y = element_text(color='#262626', size=14),
+		  axis.title = element_text(color='#262626', size=18,face='bold'), panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = 'black', size=0.2)) +
+		scale_x_discrete( limits = (x=Common_DE_FDRgenes_LFC_melt$`Experimental group`))
+		
+		
+#plotting of the histone and chromatin remodelling genes
+#I obtained a filtered list of histone and chromatin genes, which I merge to my annotation file, and then to each control contrast,
+#to then generate a combined file of these genes, the relative expression in each group, and ultimatley, a heatmaps of them all.
+Bovine_chromatin_remodelling_genes <- merge(Atac_genes, Bovine_annotation_MF2, by = Symbol, all.x = TRUE)
+write.csv(Bovine_chromatin_remodelling_genes, file = 'Bovine_chromatin_remodelling_genes.csv', row.names = FALSE)
+
+Bovine_histone_modifying_genes <- merge(Bovine_histone_genes, Bovine_annotation_MF2, by = 'Symbol', all.x = TRUE)
+write.csv(Bovine_histone_modifying_genes, file = 'Bovine_histone_modifying_genes.csv', row.names = FALSE)
+
+Bovine_chromatin_remodelling_genes <- merge(Bovine_chromatin_remodelling_genes, M_bovis_vs_Control_DE_annotated, by = 'Symbol', all.x = TRUE)
+Bovine_chromatin_remodelling_genes <- merge(Bovine_chromatin_remodelling_genes, M_tuberculosis_vs_Control_DE_annotated, by = 'Symbol', all.x = TRUE)
+Bovine_chromatin_remodelling_genes <- merge(Bovine_chromatin_remodelling_genes, BCG_vs_Control_DE_annotated, by = 'Symbol', all.x = TRUE)
+Bovine_chromatin_remodelling_genes <- merge(Bovine_chromatin_remodelling_genes, Irradiated_vs_Control_DE_annotated, by = 'Symbol', all.x = TRUE)
+
+Bovine_histone_modifying_genes <- merge(Bovine_histone_modifying_genes, M_bovis_vs_Control_DE_annotated, by = 'Symbol', all.x = TRUE)
+Bovine_histone_modifying_genes <- merge(Bovine_histone_modifying_genes, M_tuberculosis_vs_Control_DE_annotated, by = 'Symbol', all.x = TRUE)
+Bovine_histone_modifying_genes <- merge(Bovine_histone_modifying_genes, BCG_vs_Control_DE_annotated, by = 'Symbol', all.x = TRUE)
+Bovine_histone_modifying_genes <- merge(Bovine_histone_modifying_genes, Irradiated_vs_Control_DE_annotated, by = 'Symbol', all.x = TRUE)
+
+write.csv(Bovine_histone_modifying_genes, file = 'Bovine_histone_modifying_genes.csv', row.names = FALSE)
+write.csv(Bovine_chromatin_remodelling_genes, file = 'Bovine_chromatin_remodelling_genes.csv', row.names = FALSE)
+
+####### Histone gene heatmaps ######
+###############################
+# Load required packages     #
+##############################
+
+library('ggplot2')
+library('reshape2')
+library('RColorBrewer')
+library('grid')
+library('gridExtra')
+
+###############################
+# Read in and manipulate data #
+##############################
+#Set some variables
+Text_star = textGrob('* FDR < 0.05', gp = gpar(fontsize=5))
+Text1 = textGrob('24hr post infection', gp = gpar(fontsize=5.5,fontface='bold'))
+Text2 = textGrob('Bovine Histone Modifying Genes',rot=90,gp=gpar(fontsize=7.5,fontface='bold'))
+#Text3 = textGrob('M. tuberculosis', gp = gpar(fontsize=5, fontface=3))
+#Text4 = textGrob('M. bovis', gp = gpar(fontsize=5, fontface=3, xmin = 10, xmax = 10, ymin = 14, ymax = 14))
+#Text5 = textGrob('BCG', gp = gpar(fontsize=5, fontface=3, xmin = 10, xmax = 10, ymin = 14, ymax = 14))
+#Text6 = textGrob('Irradiated', gp = gpar(fontsize=5, fontface=3, xmin = 10, xmax = 10, ymin = 14, ymax = 14))
+
+annotation_custom2 <- 
+  function (grob, xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf, data) 
+  {
+    layer(data = data, stat = StatIdentity, position = PositionIdentity, 
+          geom = ggplot2:::GeomCustomAnn,
+          inherit.aes = TRUE, params = list(grob = grob, 
+                                            xmin = xmin, xmax = xmax, 
+                                            ymin = ymin, ymax = ymax)) }
+											
+col1 = colorRampPalette(c('#049AFF', '#80ccff'))(30) #changing the number in the bracket alters the gradient
+col2 <- rep('snow', 1) #can add in diff sections on gradient
+col3 = colorRampPalette(c('#ff8080', '#FF2525'))(30)
+colors2 <- c(col1,col2, col3)
+
+mylabels_logFC <- c(expression(paste(bolditalic('M. bovis'))), 
+                    expression(paste(bolditalic('M. tuberculosis'))),
+					expression(paste(bold('BCG'))),
+					expression(paste(bold('Irradiated'))))
+
+
+
+
+
+#View(all_logFC)
+
+
+#########
+# Plot1 #
+#########
+#Bovine histone genes part 1
+logFC_data<-Bovine_histone_modifying_genes1[,c(1,11,13,15,17)]
+head(logFC_data)
+logFC_data<-as.data.frame(logFC_data)
+head(logFC_data)
+dim(logFC_data)
+row.names(logFC_data)<-logFC_data[,1]
+logFC_data<-logFC_data[,2:5]
+logFC_matrix<-as.matrix(logFC_data)
+logFC_matrix
+logFC_longData <- melt(logFC_matrix)
+head(logFC_longData, 10)
+melt_lab<-c('Gene','Challenge.log2FC', 'Log2FC')
+colnames(logFC_longData)<-melt_lab
+head(logFC_longData, 10)
+dim(logFC_longData)
+
+names(Bovine_histone_modifying_genes1)
+FDR_data<-Bovine_histone_modifying_genes1[,c(1,12,14,16,18)]
+head(FDR_data)
+FDR_data<-as.data.frame(FDR_data)
+head(FDR_data)
+dim(FDR_data)
+row.names(FDR_data)<-FDR_data[,1]
+FDR_data<-FDR_data[,2:5]
+FDR_matrix<-as.matrix(FDR_data)
+FDR_matrix
+FDR_longData <- melt(FDR_matrix)
+head(FDR_longData, 10)
+melt_lab<-c('Gene','Challenge.FDR', 'FDR')
+colnames(FDR_longData)<-melt_lab
+head(FDR_longData, 10)
+dim(FDR_longData)
+
+all_logFC<-cbind(logFC_longData,FDR_longData)
+head(all_logFC)
+all_logFC<-all_logFC[,2:6]
+all_logFC$bool <- (all_logFC$FDR < 0.05)
+all_logFC <- all_logFC[order(all_logFC[,1], all_logFC[,2] ),]
+
+plot_logFC <- ggplot(all_logFC,
+                     aes(x = Challenge.log2FC, y = (Gene), fill =Log2FC))
+plot_logFC<- plot_logFC + theme(panel.border=element_rect(fill = NA, colour= 'black',size=10))
+plot_logFC <- plot_logFC + geom_tile(colour='black') +
+  ylim(rev(levels(all_logFC$Gene))) + xlim(levels(all_logFC$Challenge.log2FC))
+plot_logFC<-plot_logFC + geom_point(data=all_logFC[all_logFC$bool,], aes(x=Challenge.log2FC, 
+                                                                         y=Gene, size= as.numeric(bool)),colour='black',shape=42,size=2)  
+plot_logFC <- plot_logFC + scale_fill_gradientn(colours = colors2,limits=c(-6.1,6.1),breaks=c(-6, -3, 0, 3 ,6),
+                                                labels=c('-6', '3', '0', '3' ,'6')) 
+plot_logFC <- plot_logFC + coord_fixed(ratio = 0.3)
+plot_logFC <- plot_logFC + theme_bw(base_size = 8, base_family = '')
+plot_logFC <- plot_logFC + theme(text = element_text(size=6),axis.text.x = element_text(angle = 90,vjust=0.5,hjust=0.5,face='bold'))
+plot_logFC <- plot_logFC + theme(plot.margin=unit(c(0.3, -8, 0.3, 0.3), 'cm')) 
+plot_logFC <- plot_logFC + theme(axis.text.y = element_text(size=5.8,face='bold.italic',colour='black'))
+plot_logFC <- plot_logFC + theme(axis.text.x = element_text(size=5.7,face='bold.italic',colour = 'black'))
+plot_logFC <- plot_logFC + xlab('') + ylab('')
+plot_logFC <- plot_logFC + theme(legend.key = element_rect(colour='black', size=8)) 
+plot_logFC <- plot_logFC + theme(legend.key = element_rect(colour='black', size=10)) 
+leg=expression(paste(Log[2],'',FC))
+plot_logFC<- plot_logFC + labs(fill=leg) 
+plot_logFC<- plot_logFC + theme(legend.title=element_text(size=6)) 
+plot_logFC<- plot_logFC + theme(legend.text=element_text(size=5)) 
+plot_logFC<- plot_logFC + theme(legend.key.size =  unit(0.5, 'cm'))
+plot_logFC<- plot_logFC + theme(legend.position='none')#because i am arranging two figures with the same legend, I turn this one off
+#plot_logFC <- plot_logFC + scale_x_discrete('', labels = mylabels_logFC)
+#plot_logFC <- plot_logFC + scale_x_discrete('', limits = rev(all_logFC$Challenge.log2FC, labels = mylabels_logFC))
+#plot_logFC <- plot_logFC + guides(scale = 'none')
+print(plot_logFC)
+
+p1 <- plot_logFC + annotation_custom2(Text1,  xmin = 2.5, xmax = 2.75, ymin = -2.7, ymax = -2.7, data = all_logFC) +
+  annotation_custom2(linesGrob(), xmin = 0.3, xmax = 4.7, ymin = -2.3, ymax = -2.3, data = all_logFC) 
+p1
+
+
+#########
+# Plot2 #
+#########
+#Bovine histone genes part 2
+logFC_data<-Bovine_histone_modifying_genes2[,c(1,11,13,15,17)]
+head(logFC_data)
+logFC_data<-as.data.frame(logFC_data)
+head(logFC_data)
+dim(logFC_data)
+row.names(logFC_data)<-logFC_data[,1]
+logFC_data<-logFC_data[,2:5]
+logFC_matrix<-as.matrix(logFC_data)
+logFC_matrix
+logFC_longData <- melt(logFC_matrix)
+head(logFC_longData, 10)
+melt_lab<-c('Gene','Challenge.log2FC', 'Log2FC')
+colnames(logFC_longData)<-melt_lab
+head(logFC_longData, 10)
+dim(logFC_longData)
+
+names(Bovine_histone_modifying_genes2)
+FDR_data<-Bovine_histone_modifying_genes2[,c(1,12,14,16,18)]
+head(FDR_data)
+FDR_data<-as.data.frame(FDR_data)
+head(FDR_data)
+dim(FDR_data)
+row.names(FDR_data)<-FDR_data[,1]
+FDR_data<-FDR_data[,2:5]
+FDR_matrix<-as.matrix(FDR_data)
+FDR_matrix
+FDR_longData <- melt(FDR_matrix)
+head(FDR_longData, 10)
+melt_lab<-c('Gene','Challenge.FDR', 'FDR')
+colnames(FDR_longData)<-melt_lab
+head(FDR_longData, 10)
+dim(FDR_longData)
+
+all_logFC<-cbind(logFC_longData,FDR_longData)
+head(all_logFC)
+all_logFC<-all_logFC[,2:6]
+all_logFC$bool <- (all_logFC$FDR < 0.05)
+
+plot_logFC <- ggplot(all_logFC,
+                     aes(x = Challenge.log2FC, y = (Gene), fill =Log2FC))
+plot_logFC<- plot_logFC + theme(panel.border=element_rect(fill = NA, colour= 'black',size=10))
+plot_logFC <- plot_logFC + geom_tile(colour='black') +
+  ylim(rev(levels(all_logFC$Gene))) + xlim(levels(all_logFC$Challenge.log2FC))
+plot_logFC<-plot_logFC + geom_point(data=all_logFC[all_logFC$bool,], aes(x=Challenge.log2FC, 
+                                                                         y=Gene, size= as.numeric(bool)),colour='black',shape=42,size=2)  
+plot_logFC <- plot_logFC + scale_fill_gradientn(colours = colors2,limits=c(-6.1,6.1),breaks=c(-6, -3, 0, 3 ,6),
+                                                labels=c('-6', '3', '0', '3' ,'6')) 
+plot_logFC <- plot_logFC + coord_fixed(ratio = 0.3)
+plot_logFC <- plot_logFC + theme_bw(base_size = 8, base_family = '')
+plot_logFC <- plot_logFC + theme(text = element_text(size=6),axis.text.x = element_text(angle = 90,vjust=0.5,hjust=0.5,face='bold'))
+plot_logFC <- plot_logFC + theme(plot.margin=unit(c(0.3, 0.3, 0.3, -8), 'cm')) #These differ between the two figures in order to bring them together
+plot_logFC <- plot_logFC + theme(axis.text.y = element_text(size=5.8,face='bold.italic',colour='black'))
+plot_logFC <- plot_logFC + theme(axis.text.x = element_text(size=5.7,face='bold.italic',colour = 'black'))
+plot_logFC <- plot_logFC + xlab('') + ylab('')
+plot_logFC <- plot_logFC + theme(legend.key = element_rect(colour='black', size=8)) 
+plot_logFC <- plot_logFC + theme(legend.key = element_rect(colour='black', size=10)) 
+leg=expression(paste(Log[2],'',FC))
+plot_logFC<- plot_logFC + labs(fill=leg) 
+plot_logFC<- plot_logFC + theme(legend.title=element_text(size=6)) 
+plot_logFC<- plot_logFC + theme(legend.text=element_text(size=5)) 
+plot_logFC<- plot_logFC + theme(legend.key.size =  unit(0.5, 'cm'))
+plot_logFC<- plot_logFC + theme(legend.position=c(2, 0.5))
+#plot_logFC <- plot_logFC + scale_x_discrete('', labels = mylabels_logFC)
+#plot_logFC <- plot_logFC + scale_x_discrete('', limits = rev(all_logFC$Challenge.log2FC, labels = mylabels_logFC))
+#plot_logFC <- plot_logFC + guides(scale = 'none')
+print(plot_logFC)
+
+p2 <- plot_logFC + annotation_custom2(Text1,  xmin = 2.5, xmax = 2.75, ymin = -2.7, ymax = -2.7, data = all_logFC) +
+  annotation_custom2(linesGrob(), xmin = 0.3, xmax = 4.7, ymin = -2.3, ymax = -2.3, data = all_logFC) 
+
+grid.arrange(p1,p2,ncol=2)
